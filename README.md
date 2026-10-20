@@ -1,6 +1,6 @@
 # 🍋 Lemonade Stand
 
-A complete, production-ready web recreation of the classic 1979 Apple ][e **Lemonade Stand** business simulation game, featuring a persistent **Three-Way Visual Mode Toggle** (**Retro Apple ][e**, **8-Bit Arcade**, and **Modern**), a strict **Family-Friendly Stand Name Filter**, automatic **LocalStorage Save State**, and **7 SQLite-backed Leaderboards**.
+A complete, production-ready web recreation of the classic 1983 Apple ][e **Lemonade Stand** business simulation game, featuring a persistent **Three-Way Visual Mode Toggle** (**Retro Apple ][e**, **8-Bit Arcade**, and **Modern**), a strict **Family-Friendly Stand Name Filter**, automatic **LocalStorage Save State**, and **7 SQLite-backed Leaderboards**.
 
 Target Subdomain: `lemonadestand.stabthefinger.com`
 
