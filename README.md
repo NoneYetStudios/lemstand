@@ -14,20 +14,20 @@ Target Subdomain: `lemonadestand.stabthefinger.com`
   - **Modern Mode (`Modern`)**: Clean glassmorphic cards, soft citrus & sky gradients, smooth animations, vector SVG weather icons, and warm harmonic chimes.
 - **Strict Family-Friendly Stand Name Filter**:
   - Enforces `3–12` characters (`A–Z`, `a–z`, `0–9`, `_`).
-  - Normalizes lowercase, strips separators, decodes multi-variant leetspeak (`a55`, `f4g`, `b1tch`, `5h1t`, `c0ck`, etc.), resolves phonetic obfuscations (`azz`, `fuk`, `shyt`, `cawk`, `phuck`, `biatch`), collapses repeated letters (`fuuuuck`, `biiiiitch`), and blocks any nickname containing profanity even when embedded inside longer strings—both client-side and server-side.
+  - Normalizes lowercase, strips separators, decodes multi-variant leetspeak, resolves phonetic obfuscations, collapses repeated letters, and blocks any nickname containing profanity even when embedded inside longer strings—both client-side and server-side.
   - **Silent Success & Friendly Failure**: Valid Stand Names produce zero text (completely silent success). Invalid names display the exact friendly message: *"Stand Name not allowed. Please choose a family-friendly name."*
-  - **Non-Enforced Uniqueness**: Multiple players may freely use the same Stand Name.
+  - **Non-Enforced Uniqueness**: Multiple players may freely use the same Stand Name. Good for them, potentially confusing globally, but this is a small web app, just for fun. You know what you did. :)
 - **Hidden Stand Token (Anonymous Player Identity)**:
   - Generates an anonymous random 6–10 character token on first visit stored in `localStorage` (`standToken`).
   - Never displayed to the user; included with leaderboard submissions and stored server-side.
   - **Leaderboard Highlighting**: Matching entries for the active player are marked with `🍋 <=== You`.
-  - **Zero Tracking**: No IP addresses logged or displayed, and no cookie banner required.
+  - **Zero Tracking**: No cookie banner required.
 - **Classic Apple ][e Gameplay Mechanics**:
   - Manage daily glasses made, advertising signs (`15¢` each), and price per glass (`1¢–100¢`).
   - Dynamic weather system: **Sunny**, **Cloudy**, **Hot & Dry**, **Thunderstorms**, **Extreme Heatwave**, and **Cold Snap**.
   - Random neighborhood events: **Severe Thunderstorms** wiping out sales, **Street Closures** (detours or thirsty road crews buying out your stock!), **Windy Gusts** blowing down signs, **Ingredient Supply Shortages**, and **Neighborhood Block Parties**.
   - Play **Standard 12-Day Mode** or **Endless Summer Mode** with automatic `localStorage` save state (`Continue Your Stand` / `Start New Stand`).
-- **7 Leaderboards + Anti-Cheat Validation**:
+- **7 Leaderboards + Anti-Cheat Validation (minimal - you can hack it if you really want)**:
   - `leaderboard_daily`, `leaderboard_weekly`, `leaderboard_all_time`, `leaderboard_best_day`, `leaderboard_best_run`, `leaderboard_glasses_day`, `leaderboard_glasses_run`.
 
 ---
