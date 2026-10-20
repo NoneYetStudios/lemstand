@@ -16,7 +16,7 @@ require('./generateAssets');
 
 // 2. Compile Tailwind CSS directly into frontend/css/tailwind.min.css
 console.log('📦 Compiling production Tailwind CSS...');
-execSync('npx tailwindcss -i frontend/css/tailwind-input.css -o frontend/css/tailwind.min.css --minify', {
+execSync('npx tailwindcss -i scripts/tailwind-input.css -o frontend/css/tailwind.min.css --minify', {
   cwd: path.resolve(__dirname, '..'),
   stdio: 'inherit'
 });

@@ -9,7 +9,7 @@
 
     # 2. Route all API requests to the PHP backend
     RewriteCond %{REQUEST_URI} ^/api/ [NC]
-    RewriteRule ^api/(.*)$ api/index.php [QSA,L]
+    RewriteRule ^api/(.*)$ api/index.php?__route__=$1 [QSA,L]
 
     # 3. Allow real static files and folders to serve directly
     RewriteCond %{REQUEST_FILENAME} -f [OR]

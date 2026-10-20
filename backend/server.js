@@ -396,7 +396,7 @@ function createApp(customDbPath) {
   }
 
   // 1. Fetch daily leaderboard
-  app.get('/api/leaderboard/daily', makeLeaderboardHandler('daily', 'Daily Leaderboard (Last 24h)', 'cents'));
+  app.get('/api/leaderboard/daily', makeLeaderboardHandler('daily', 'Daily High Scores (Last 24 Hours)', 'cents'));
 
   // 2. Fetch weekly leaderboard
   app.get('/api/leaderboard/weekly', makeLeaderboardHandler('weekly', 'Weekly Leaderboard (Last 7d)', 'cents'));
