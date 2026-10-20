@@ -4,13 +4,13 @@
   "description": "Modern web recreation of the classic Apple ][e Lemonade Stand game with Retro, 8-bit, and Modern modes, strict family-friendly filtering, and SQLite leaderboards.",
   "main": "backend/server.js",
   "scripts": {
-    "start": "node --no-warnings backend/server.js",
-    "dev": "node --no-warnings --watch backend/server.js",
-    "init-db": "node --no-warnings backend/scripts/initDb.js",
-    "seed": "node --no-warnings backend/scripts/seedDb.js",
+    "start": "node backend/server.js",
+    "dev": "node --watch backend/server.js",
+    "init-db": "node backend/scripts/initDb.js",
+    "seed": "node backend/scripts/seedDb.js",
     "build:css": "tailwindcss -i frontend/css/tailwind-input.css -o frontend/css/tailwind.min.css --minify",
     "build": "node scripts/build.js",
-    "test": "node --no-warnings tests/runTests.js"
+    "test": "npm run build && node tests/runTests.js"
   },
   "keywords": [
     "lemonade-stand",

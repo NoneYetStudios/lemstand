@@ -17,8 +17,9 @@ RUN mkdir -p /data && node scripts/generateAssets.js
 ENV NODE_ENV=production
 ENV PORT=8080
 ENV DB_PATH=/data/lemonadestand.db
-ENV ALLOWED_ORIGINS=https://lemonadestand.stabthefinger.com
+ENV TRUST_PROXY=2
+ENV ALLOWED_ORIGINS=*
 
 EXPOSE 8080
 
-CMD ["node", "--no-warnings", "backend/server.js"]
+CMD ["node", "backend/server.js"]

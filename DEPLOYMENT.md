@@ -12,20 +12,20 @@ This guide covers deploying **Lemonade Stand** in production with:
 If your web server is **JetHost** (or any standard cPanel / Apache / PHP shared host):
 
 ### 1. Build Production Assets Locally
-Run the build script on your computer:
+Run the frontend build script on your computer:
 ```bash
 npm run build
 ```
-This generates the complete production bundle in the `dist/` folder, including:
-- `dist/index.html`, `dist/css/`, `dist/js/`, `dist/assets/`
-- `dist/api/index.php` (native PHP + SQLite PDO leaderboard & save API)
-- `dist/.htaccess` (Apache URL routing & database protection)
+This generates all icons, sounds, and minified CSS directly inside `frontend/`, including:
+- `frontend/index.html`, `frontend/css/`, `frontend/js/`, `frontend/assets/`
+- `frontend/api/index.php` (native PHP + SQLite PDO leaderboard & save API)
+- `frontend/.htaccess` (Apache URL routing & database protection)
 
 ### 2. Upload to JetHost
 1. Log into your **JetHost cPanel**.
 2. Open **File Manager** and navigate to your website's root folder (`public_html` or your subdomain folder `public_html/lemonadestand`).
-3. Upload all files and folders from inside `dist/` directly into that folder. (Ensure `.htaccess` and `api/` are included).
-4. That's it! JetHost will automatically run the PHP SQLite API and serve the game. The SQLite database will be created automatically in `data/lemonadestand.db` and protected against direct browser access.
+3. Upload all files and folders from inside `frontend/` (plus `schema.sql`) directly into that folder.
+4. JetHost will automatically run the PHP SQLite API and serve the game.
 
 ---
 
@@ -49,17 +49,7 @@ fly deploy
 The included [`fly.toml`](./fly.toml) and [`Dockerfile`](./Dockerfile) automatically:
 - Mount the persistent volume at `/data`
 - Store the SQLite database at `/data/lemonadestand.db` (enabled with `PRAGMA journal_mode = WAL;`)
-- Initialize all 7 leaderboard tables from [`schema.sql`](./schema.sql)
-
-### 3. Map `lemonadestand.stabthefinger.com` on Fly.io
-
-```bash
-fly certs add lemonadestand.stabthefinger.com
-```
-
-Add the following DNS records at your DNS provider for `stabthefinger.com`:
-- `CNAME` record: `lemonadestand` -> `<your-app-name>.fly.dev`
-- (Or `A` / `AAAA` records pointing to the IPs shown by `fly ips list`)
+- Initialize all leaderboard and run-session tables from [`schema.sql`](./schema.sql)
 
 ---
 
@@ -70,52 +60,20 @@ Add the following DNS records at your DNS provider for `stabthefinger.com`:
 3. Render automatically reads [`render.yaml`](./render.yaml):
    - Provisions a Docker web service (`lemonade-stand-api`)
    - Attaches a 1 GB persistent disk mounted at `/data`
-   - Sets `DB_PATH=/data/lemonadestand.db` and `ALLOWED_ORIGINS=https://lemonadestand.stabthefinger.com`
+   - Sets `DB_PATH=/data/lemonadestand.db` and `TRUST_PROXY=2`
 
 ---
 
 ## Option C: Split Frontend (Vercel or Netlify) + Backend (Fly.io or Render)
 
-If you prefer hosting the static frontend on Vercel/Netlify's edge CDN while proxying `/api/*` requests to your Fly.io or Render backend:
+`npm run build` is frontend-only (generates assets and compiles Tailwind CSS into `frontend/` without touching SQLite or creating a `dist/` folder), so Netlify and Vercel builds work out of the box and publish `frontend/`.
 
 ### 1. Deploy Frontend on Vercel
-
-1. Update the destination URL in [`vercel.json`](./vercel.json) if your backend hostname differs from `https://lemonade-stand-api.fly.dev`:
-   ```json
-   {
-     "source": "/api/:path*",
-     "destination": "https://lemonade-stand-api.fly.dev/api/:path*"
-   }
-   ```
-2. Deploy with Vercel CLI:
-   ```bash
-   npx vercel --prod
-   ```
-3. In Vercel **Project Settings -> Domains**, add:
-   ```text
-   lemonadestand.stabthefinger.com
-   ```
-4. In your DNS provider for `stabthefinger.com`, add the CNAME record:
-   - **Type:** `CNAME`
-   - **Name:** `lemonadestand`
-   - **Value:** `cname.vercel-dns.com`
+```bash
+npx vercel --prod
+```
 
 ### 2. Deploy Frontend on Netlify
-
-1. Update the `/api/*` redirect target in [`netlify.toml`](./netlify.toml) if needed.
-2. Run:
-   ```bash
-   npx netlify-cli deploy --prod --dir=frontend
-   ```
-3. In Netlify **Domain Management**, add custom domain `lemonadestand.stabthefinger.com` and point your `lemonadestand` CNAME record to `<your-site>.netlify.app`.
-
----
-
-## SQLite Backup & Maintenance
-
-Because SQLite runs in `WAL` (Write-Ahead Logging) mode at `/data/lemonadestand.db`, you can safely back up the database online from your Fly.io or Render container:
-
 ```bash
-fly ssh console -C "sqlite3 /data/lemonadestand.db '.backup /data/lemonadestand-backup.db'"
-fly sftp get /data/lemonadestand-backup.db ./lemonadestand-backup.db
+npx netlify-cli deploy --prod --dir=frontend
 ```

@@ -1,39 +1,198 @@
 /**
- * Lemonade Stand - Core Game Engine, State Persistence, and UI Controller
+ * Lemonade Stand - Core Game Engine, Deterministic Simulation, State Persistence, and UI Controller
  * Recreates the classic Apple ][e Lemonade Stand mechanics with Retro, 8-Bit, and Modern modes.
+ * Shared across Browser (window.LemonadeGame) and Node.js backend (CommonJS) for zero-duplication replay verification.
  */
 (function (root) {
   'use strict';
 
+  const ProfanityFilter =
+    root.ProfanityFilter ||
+    (typeof require === 'function' ? require('./profanityFilter') : null);
+
   const SAVE_KEY = 'lemonadestand_save_v1';
+  const LAST_RUN_KEY = 'lemonadestand_last_run_v1';
   const THEME_KEY = 'lemonadestand_theme';
   const NICKNAME_KEY = 'lemonadestand_nickname';
   const STAND_TOKEN_KEY = 'standToken';
   const GAME_VERSION = '1.0.0';
   const STARTING_ASSETS_CENTS = 200; // $2.00
   const SIGN_COST_CENTS = 15; // $0.15 per sign
+  const STAND_TOKEN_REGEX = /^[A-Za-z0-9]{16,24}$/;
   const FRIENDLY_FAILURE_MSG = 'Stand Name not allowed. Please choose a family-friendly name.';
 
+  // ---------------------------------------------------------------------------
+  // Pure-JS FIPS 180-4 SHA-256 (synchronous for client + server token hashing)
+  // ---------------------------------------------------------------------------
+  const SHA256_K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+  ];
+
+  function rotr(n, x) {
+    return (x >>> n) | (x << (32 - n));
+  }
+
+  function sha256Hex(ascii) {
+    const str = unescape(encodeURIComponent(String(ascii || '')));
+    const msgLen = str.length;
+    const bitLenHi = Math.floor((msgLen * 8) / 0x100000000);
+    const bitLenLo = (msgLen * 8) >>> 0;
+
+    const totalWords = (((msgLen + 8) >> 6) + 1) * 16;
+    const words = new Int32Array(totalWords);
+
+    for (let i = 0; i < msgLen; i++) {
+      words[i >> 2] |= str.charCodeAt(i) << (24 - (i % 4) * 8);
+    }
+    words[msgLen >> 2] |= 0x80 << (24 - (msgLen % 4) * 8);
+    words[totalWords - 2] = bitLenHi;
+    words[totalWords - 1] = bitLenLo;
+
+    let h0 = 0x6a09e667;
+    let h1 = 0xbb67ae85;
+    let h2 = 0x3c6ef372;
+    let h3 = 0xa54ff53a;
+    let h4 = 0x510e527f;
+    let h5 = 0x9b05688c;
+    let h6 = 0x1f83d9ab;
+    let h7 = 0x5be0cd19;
+
+    const w = new Int32Array(64);
+
+    for (let offset = 0; offset < totalWords; offset += 16) {
+      for (let i = 0; i < 16; i++) {
+        w[i] = words[offset + i];
+      }
+      for (let i = 16; i < 64; i++) {
+        const s0 = rotr(7, w[i - 15]) ^ rotr(18, w[i - 15]) ^ (w[i - 15] >>> 3);
+        const s1 = rotr(17, w[i - 2]) ^ rotr(19, w[i - 2]) ^ (w[i - 2] >>> 10);
+        w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;
+      }
+
+      let a = h0;
+      let b = h1;
+      let c = h2;
+      let d = h3;
+      let e = h4;
+      let f = h5;
+      let g = h6;
+      let h = h7;
+
+      for (let i = 0; i < 64; i++) {
+        const S1 = rotr(6, e) ^ rotr(11, e) ^ rotr(25, e);
+        const ch = (e & f) ^ (~e & g);
+        const temp1 = (h + S1 + ch + SHA256_K[i] + w[i]) | 0;
+        const S0 = rotr(2, a) ^ rotr(13, a) ^ rotr(22, a);
+        const maj = (a & b) ^ (a & c) ^ (b & c);
+        const temp2 = (S0 + maj) | 0;
+
+        h = g;
+        g = f;
+        f = e;
+        e = (d + temp1) | 0;
+        d = c;
+        c = b;
+        b = a;
+        a = (temp1 + temp2) | 0;
+      }
+
+      h0 = (h0 + a) | 0;
+      h1 = (h1 + b) | 0;
+      h2 = (h2 + c) | 0;
+      h3 = (h3 + d) | 0;
+      h4 = (h4 + e) | 0;
+      h5 = (h5 + f) | 0;
+      h6 = (h6 + g) | 0;
+      h7 = (h7 + h) | 0;
+    }
+
+    return [h0, h1, h2, h3, h4, h5, h6, h7]
+      .map((v) => (v >>> 0).toString(16).padStart(8, '0'))
+      .join('');
+  }
+
   /**
-   * Hidden, anonymous Stand Token stored in localStorage to distinguish leaderboard entries.
-   * Generates a 6-10 character random token on first visit. Never displayed to user.
+   * Generate a cryptographically random 20-character alphanumeric stand token (16–24 chars).
+   */
+  function generateRandomStandToken(length = 20) {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const len = Math.max(16, Math.min(24, length));
+    let out = '';
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+      const bytes = new Uint8Array(len);
+      crypto.getRandomValues(bytes);
+      for (let i = 0; i < len; i++) {
+        out += chars.charAt(bytes[i] % chars.length);
+      }
+      return out;
+    }
+    for (let i = 0; i < len; i++) {
+      out += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return out;
+  }
+
+  /**
+   * Hidden, anonymous Stand Token stored in localStorage (16–24 random characters).
+   * Raw token is never displayed or returned by the server; only sha256(token) is stored/returned.
    */
   function getOrCreateStandToken() {
     try {
       let token = localStorage.getItem(STAND_TOKEN_KEY);
-      if (!token || typeof token !== 'string' || token.length < 6 || token.length > 10) {
-        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-        let generated = '';
-        for (let i = 0; i < 8; i++) {
-          generated += chars.charAt(Math.floor(Math.random() * chars.length));
-        }
-        token = generated;
+      if (!token || typeof token !== 'string' || !STAND_TOKEN_REGEX.test(token)) {
+        token = generateRandomStandToken(20);
         localStorage.setItem(STAND_TOKEN_KEY, token);
       }
       return token;
     } catch (_) {
-      return 'anonUser8';
+      return 'AnonPlayerToken16Chr';
     }
+  }
+
+  /**
+   * Compute SHA-256 hex digest of the client's Stand Token to identify "You" rows on leaderboards.
+   */
+  function getStandTokenHash(customToken) {
+    const raw = customToken || getOrCreateStandToken();
+    return sha256Hex(raw);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Deterministic Seeded PRNG & Rolling Seeds (Standard & Endless Mode)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Advance a rolling 32-bit seed for the given day number.
+   * Ensures both Standard and Endless mode runs use deterministic rolling seeds.
+   */
+  function advanceRollingSeed(seed, day) {
+    let h = ((Number(seed) >>> 0) ^ Math.imul(Number(day) >>> 0, 0x9e3779b9)) >>> 0;
+    h ^= h >>> 16;
+    h = Math.imul(h, 0x85ebca6b) >>> 0;
+    h ^= h >>> 13;
+    h = Math.imul(h, 0xc2b2ae35) >>> 0;
+    h ^= h >>> 16;
+    return (h >>> 0) || 1;
+  }
+
+  /**
+   * Mulberry32 deterministic PRNG returning floats in [0, 1).
+   */
+  function createSeededRng(seed) {
+    let a = (Number(seed) >>> 0) || 1;
+    return function nextFloat() {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
   }
 
   // Weather Definitions
@@ -135,7 +294,7 @@
     bonus_demand: {
       id: 'bonus_demand',
       title: 'NEIGHBORHOOD BLOCK PARTY!',
-      description: 'A lively community parade and block party marched right past your stand,nearly doubling thirsty customers!',
+      description: 'A lively community parade and block party marched right past your stand, nearly doubling thirsty customers!',
       badge: 'BONUS DEMAND',
       type: 'success'
     }
@@ -160,19 +319,6 @@
   }
 
   /**
-   * Deterministic run checksum matching backend/src/validation.js
-   */
-  function computeRunChecksum(standName, score, totalGlasses, bestDayProfit, bestDayGlasses, daysPlayed) {
-    const payload = `${String(standName).toLowerCase()}|${score}|${totalGlasses}|${bestDayProfit}|${bestDayGlasses}|${daysPlayed}|LEMSTAND_V1_SALT`;
-    let hash = 2166136261;
-    for (let i = 0; i < payload.length; i++) {
-      hash ^= payload.charCodeAt(i);
-      hash = Math.imul(hash, 16777619);
-    }
-    return (hash >>> 0).toString(16).padStart(8, '0');
-  }
-
-  /**
    * Determine base cost per glass (in cents) for a given day number.
    */
   function getBaseCostPerGlass(day) {
@@ -182,10 +328,15 @@
   }
 
   /**
-   * Roll weather & morning pre-decision event (such as supply shortage) for a new day.
+   * Roll weather & morning pre-decision event (such as supply shortage) for a day using its rollingSeed.
    */
-  function generateDayConditions(day) {
-    const roll = Math.random();
+  function generateDayConditions(day, rollingSeed) {
+    const rng = rollingSeed !== undefined && rollingSeed !== null
+      ? createSeededRng(rollingSeed)
+      : Math.random;
+
+    const roll = rng();
+    const shortageRoll = rng();
     let weatherKey = 'sunny';
 
     if (day === 1) {
@@ -206,7 +357,7 @@
     }
 
     // Check for morning supply shortage (can happen Day 3+)
-    const hasSupplyShortage = day >= 3 && Math.random() < 0.14;
+    const hasSupplyShortage = day >= 3 && shortageRoll < 0.14;
     const baseCost = getBaseCostPerGlass(day) + (hasSupplyShortage ? 2 : 0);
 
     let costReason =
@@ -229,15 +380,19 @@
   }
 
   /**
-   * Simulate a day's sales based on decisions, weather, and random events.
+   * Simulate a day's sales based on decisions, weather, and deterministic rolling seed.
    */
   function simulateDayOutcome(state, decisions) {
     const { glassesMade, signsMade, pricePerGlass } = decisions;
     const weather = WEATHER_TYPES[state.currentWeather] || WEATHER_TYPES.sunny;
 
+    const afternoonRng = state && state.rollingSeed !== undefined && state.rollingSeed !== null
+      ? createSeededRng(((Number(state.rollingSeed) >>> 0) ^ 0xa5a5a5a5) >>> 0)
+      : Math.random;
+
     // Determine afternoon random event
     let eventKey = state.hasSupplyShortage ? 'supply_shortage' : 'none';
-    const eventRoll = Math.random();
+    const eventRoll = afternoonRng();
 
     if (state.currentWeather === 'thunderstorms' && eventRoll < 0.75) {
       eventKey = 'thunderstorm_wipeout';
@@ -267,7 +422,6 @@
     }
 
     // Classic Apple ][e demand curve based on price (in cents)
-    // Base reference demand at 10¢ is ~36 glasses on a sunny day
     let priceFactor;
     if (pricePerGlass <= 10) {
       priceFactor = 1.0 + (10 - pricePerGlass) * 0.085;
@@ -281,7 +435,7 @@
 
     const baseCustomers = 36 * priceFactor * weather.demandMultiplier;
 
-    // Advertising boost: diminishing exponential curve (classic Apple ][ formula: 1 - exp(-0.5 * signs))
+    // Advertising boost: diminishing exponential curve
     const adBoostMultiplier = 1 + (1 - Math.exp(-0.45 * effectiveSigns)) * 0.95;
 
     let rawDemand = Math.round(baseCustomers * adBoostMultiplier);
@@ -290,7 +444,8 @@
     if (eventKey === 'thunderstorm_wipeout') {
       rawDemand = 0;
     } else if (eventKey === 'street_crew_buys_all') {
-      rawDemand = Math.max(glassesMade, 45);
+      // Thirsty road crew buys up to 75 glasses if price is reasonable (<= 35¢)
+      rawDemand = pricePerGlass <= 35 ? Math.min(75, Math.max(glassesMade, 45)) : Math.min(15, rawDemand);
     } else if (eventKey === 'street_closure_detour') {
       rawDemand = Math.round(rawDemand * 0.42);
     } else if (eventKey === 'bonus_demand') {
@@ -328,6 +483,234 @@
       signsCostCents,
       totalExpensesCents,
       profitCents: netProfitCents
+    };
+  }
+
+  /**
+   * Deterministically replay a full run from the initial server-issued runSeed and player's day_log.
+   * Used by the backend anti-cheat verifier to verify every single day's decisions and outcomes.
+   */
+  function replayRun(runSeed, dayLog, gameMode = 'standard') {
+    const seedNum = Number(runSeed);
+    if (!Number.isInteger(seedNum) || seedNum <= 0 || seedNum > 0xffffffff) {
+      return { valid: false, code: 'INVALID_RUN_SEED', error: 'Invalid or missing server-issued run seed.' };
+    }
+    if (!Array.isArray(dayLog) || dayLog.length === 0) {
+      return { valid: false, code: 'MISSING_DAY_LOG', error: 'A valid non-empty day_log is required for score verification.' };
+    }
+    const maxDays = gameMode === 'endless' ? 365 : 12;
+    if (dayLog.length > maxDays) {
+      return { valid: false, code: 'LOG_TOO_LONG', error: `Day log exceeds maximum allowed length (${maxDays}).` };
+    }
+
+    let assetsCents = STARTING_ASSETS_CENTS;
+    let totalProfitCents = 0;
+    let totalGlassesSold = 0;
+    let bestDayProfit = 0;
+    let bestDayNumber = 1;
+    let bestDayWeather = 'sunny';
+    let bestDayGlasses = 0;
+    let bestGlassesDayNumber = 1;
+    let bestGlassesWeather = 'sunny';
+    let rollingSeed = seedNum >>> 0;
+    const replayedLog = [];
+
+    for (let i = 0; i < dayLog.length; i++) {
+      const entry = dayLog[i];
+      const dayNum = i + 1;
+      if (!entry || typeof entry !== 'object') {
+        return { valid: false, code: 'INVALID_LOG_ENTRY', error: `Malformed day log entry at day ${dayNum}.` };
+      }
+
+      if (entry.day !== undefined && Number(entry.day) !== dayNum) {
+        return { valid: false, code: 'OUT_OF_ORDER_DAY_LOG', error: `Day log sequence mismatch at day ${dayNum}.` };
+      }
+
+      // Advance rolling seed for dayNum
+      rollingSeed = advanceRollingSeed(rollingSeed, dayNum);
+      const cond = generateDayConditions(dayNum, rollingSeed);
+
+      if (i === 0) {
+        bestDayWeather = cond.weatherKey;
+        bestGlassesWeather = cond.weatherKey;
+      }
+
+      const glassesMade = Number(entry.glassesMade);
+      const signsMade = Number(entry.signsMade);
+      const pricePerGlass = Number(entry.pricePerGlass);
+
+      if (
+        !Number.isInteger(glassesMade) || glassesMade < 0 || glassesMade > 600 ||
+        !Number.isInteger(signsMade) || signsMade < 0 || signsMade > 200 ||
+        !Number.isInteger(pricePerGlass) || pricePerGlass < 1 || pricePerGlass > 100
+      ) {
+        return {
+          valid: false,
+          code: 'DAY_LOG_TAMPERED',
+          error: `Day ${dayNum} decisions are outside allowed bounds.`
+        };
+      }
+
+      // Verify the player had enough cash that morning to afford glasses + signs
+      const morningCost = glassesMade * cond.costPerGlassCents + signsMade * SIGN_COST_CENTS;
+      if (morningCost > assetsCents) {
+        return {
+          valid: false,
+          code: 'INSUFFICIENT_FUNDS_IN_LOG',
+          error: `Day ${dayNum} expenses (${morningCost}¢) exceed available cash (${assetsCents}¢).`
+        };
+      }
+
+      const simState = {
+        day: dayNum,
+        currentWeather: cond.weatherKey,
+        hasSupplyShortage: cond.hasSupplyShortage,
+        costPerGlassCents: cond.costPerGlassCents,
+        rollingSeed
+      };
+
+      const outcome = simulateDayOutcome(simState, { glassesMade, signsMade, pricePerGlass });
+
+      // Verify submitted outcome matches server replay
+      if (
+        Number(entry.glassesSold) !== outcome.glassesSold ||
+        Number(entry.profitCents) !== outcome.profitCents ||
+        (entry.weather !== undefined && entry.weather !== outcome.weatherKey) ||
+        (entry.event !== undefined && entry.event !== outcome.eventKey)
+      ) {
+        return {
+          valid: false,
+          code: 'REPLAY_MISMATCH',
+          error: `Day ${dayNum} submitted outcome does not match server simulation replay.`
+        };
+      }
+
+      assetsCents += outcome.profitCents;
+      totalProfitCents += outcome.profitCents;
+      totalGlassesSold += outcome.glassesSold;
+
+      if (entry.assetsAfterCents !== undefined && Number(entry.assetsAfterCents) !== assetsCents) {
+        return {
+          valid: false,
+          code: 'ASSETS_MISMATCH',
+          error: `Day ${dayNum} ending cash balance mismatch.`
+        };
+      }
+
+      if (outcome.profitCents > bestDayProfit) {
+        bestDayProfit = outcome.profitCents;
+        bestDayNumber = dayNum;
+        bestDayWeather = outcome.weatherKey;
+      }
+      if (outcome.glassesSold > bestDayGlasses) {
+        bestDayGlasses = outcome.glassesSold;
+        bestGlassesDayNumber = dayNum;
+        bestGlassesWeather = outcome.weatherKey;
+      }
+
+      replayedLog.push({
+        day: dayNum,
+        weather: outcome.weatherKey,
+        event: outcome.eventKey,
+        glassesMade: outcome.glassesMade,
+        glassesSold: outcome.glassesSold,
+        signsMade: outcome.signsMade,
+        pricePerGlass: outcome.pricePerGlass,
+        profitCents: outcome.profitCents,
+        assetsAfterCents: assetsCents
+      });
+
+      // Check bankruptcy before any subsequent day
+      if (i < dayLog.length - 1) {
+        const minNextCost = getBaseCostPerGlass(dayNum + 1);
+        if (assetsCents < minNextCost) {
+          return {
+            valid: false,
+            code: 'PLAYED_WHILE_BANKRUPT',
+            error: `Stand went bankrupt on day ${dayNum} but log continues to day ${dayNum + 1}.`
+          };
+        }
+      }
+    }
+
+    return {
+      valid: true,
+      score: totalProfitCents,
+      totalGlassesSold,
+      bestDayProfit,
+      bestDayNumber,
+      bestDayWeather,
+      bestDayGlasses,
+      bestGlassesDayNumber,
+      bestGlassesWeather,
+      finalAssets: assetsCents,
+      daysPlayed: dayLog.length,
+      replayedLog
+    };
+  }
+
+  /**
+   * Simulate a complete valid run for a given runSeed and strategy (used for testing & cap verification).
+   */
+  function simulateAutomatedRun(runSeed, days = 12, gameMode = 'standard', customStrategy) {
+    let rollingSeed = Number(runSeed) >>> 0;
+    let assetsCents = STARTING_ASSETS_CENTS;
+    const dayLog = [];
+
+    for (let day = 1; day <= days; day++) {
+      const nextSeed = advanceRollingSeed(rollingSeed, day);
+      const cond = generateDayConditions(day, nextSeed);
+      if (assetsCents < getBaseCostPerGlass(day)) {
+        break;
+      }
+
+      let decisions;
+      if (typeof customStrategy === 'function') {
+        decisions = customStrategy({ day, assetsCents, cond, rollingSeed: nextSeed });
+      } else {
+        const maxGlasses = Math.floor(assetsCents / cond.costPerGlassCents);
+        const glassesMade = Math.min(maxGlasses, cond.weatherKey === 'thunderstorms' ? 5 : 30);
+        const cashLeft = assetsCents - glassesMade * cond.costPerGlassCents;
+        const signsMade = Math.min(Math.floor(cashLeft / SIGN_COST_CENTS), 2);
+        const pricePerGlass = cond.weatherKey === 'heatwave' || cond.weatherKey === 'hot_dry' ? 14 : 10;
+        decisions = { glassesMade, signsMade, pricePerGlass };
+      }
+
+      const outcome = simulateDayOutcome(
+        {
+          day,
+          currentWeather: cond.weatherKey,
+          hasSupplyShortage: cond.hasSupplyShortage,
+          costPerGlassCents: cond.costPerGlassCents,
+          rollingSeed: nextSeed
+        },
+        decisions
+      );
+
+      rollingSeed = nextSeed;
+      assetsCents += outcome.profitCents;
+      dayLog.push({
+        day,
+        weather: outcome.weatherKey,
+        event: outcome.eventKey,
+        glassesMade: outcome.glassesMade,
+        glassesSold: outcome.glassesSold,
+        signsMade: outcome.signsMade,
+        pricePerGlass: outcome.pricePerGlass,
+        profitCents: outcome.profitCents,
+        assetsAfterCents: assetsCents
+      });
+
+      if (assetsCents < getBaseCostPerGlass(day + 1)) {
+        break;
+      }
+    }
+
+    const replay = replayRun(runSeed, dayLog, gameMode);
+    return {
+      ...replay,
+      runSeed: Number(runSeed) >>> 0,
+      dayLog
     };
   }
 
@@ -411,8 +794,7 @@
         Number.isInteger(parsed.assetsCents) &&
         !parsed.isFinished
       ) {
-        // Ensure saved nickname still passes strict profanity filter
-        const check = root.ProfanityFilter.validateStandName(parsed.standName);
+        const check = ProfanityFilter.validateStandName(parsed.standName);
         if (!check.valid) {
           localStorage.removeItem(SAVE_KEY);
           return null;
@@ -434,14 +816,26 @@
   }
 
   /**
-   * Create a brand new game state object.
+   * Create a brand new game state object using a server-issued per-run seed.
    */
-  function createNewGameState(standName, gameMode = 'standard') {
-    const day1 = generateDayConditions(1);
+  function createNewGameState(standName, gameMode = 'standard', seedData = null) {
+    const normalizedGameMode = gameMode === 'endless' ? 'endless' : 'standard';
+    const initialRunSeed =
+      seedData && Number.isInteger(Number(seedData.runSeed)) && Number(seedData.runSeed) > 0
+        ? Number(seedData.runSeed) >>> 0
+        : (Math.floor(Math.random() * 0xfffffffe) + 1) >>> 0;
+
+    const day1RollingSeed = advanceRollingSeed(initialRunSeed, 1);
+    const day1 = generateDayConditions(1, day1RollingSeed);
+
     return {
       standName,
-      gameMode: gameMode === 'endless' ? 'endless' : 'standard',
-      maxDays: gameMode === 'endless' ? null : 12,
+      gameMode: normalizedGameMode,
+      maxDays: normalizedGameMode === 'endless' ? null : 12,
+      runId: (seedData && seedData.runId) || '',
+      runSeed: initialRunSeed,
+      runToken: (seedData && seedData.runToken) || '',
+      rollingSeed: day1RollingSeed,
       day: 1,
       assetsCents: STARTING_ASSETS_CENTS,
       totalProfitCents: 0,
@@ -459,7 +853,6 @@
       costReason: day1.costReason,
       lastDayReport: null,
       dayLog: [],
-      // Carry-forward daily settings (glasses, signs, price)
       lastSettings: null,
       isFinished: false,
       scoreSubmitted: false,
@@ -494,7 +887,6 @@
         }
       }
 
-      // Update all theme toggle buttons across header
       document.querySelectorAll('[data-theme-btn]').forEach((btn) => {
         const btnMode = btn.getAttribute('data-theme-btn');
         if (btnMode === currentTheme) {
@@ -511,7 +903,6 @@
       root.LemonadeSound.play('click');
     }
 
-    // Refresh dynamic artwork on current screen
     renderDynamicArtwork();
   }
 
@@ -591,7 +982,7 @@
   function getSavedNickname() {
     try {
       const saved = localStorage.getItem(NICKNAME_KEY);
-      if (saved && root.ProfanityFilter.validateStandName(saved).valid) {
+      if (saved && ProfanityFilter.validateStandName(saved).valid) {
         return saved;
       }
     } catch (_) {}
@@ -649,14 +1040,13 @@
       return false;
     }
 
-    const result = root.ProfanityFilter.validateStandName(trimmed);
+    const result = ProfanityFilter.validateStandName(trimmed);
     if (!result.valid) {
       feedback.textContent = FRIENDLY_FAILURE_MSG;
       feedback.className = 'text-xs mt-2 font-semibold text-red-500 block';
       return false;
     }
 
-    // Validation success must be completely silent.
     feedback.textContent = '';
     feedback.className = 'text-xs mt-2 hidden text-red-500 font-semibold';
     return true;
@@ -685,7 +1075,6 @@
     document.getElementById('cost-per-glass-display').textContent = `${gameState.costPerGlassCents}¢`;
     document.getElementById('cost-reason-banner').textContent = gameState.costReason;
 
-    // Show/hide "Retire & Cash Out" button in Endless mode
     const retireBtn = document.getElementById('btn-retire-endless');
     if (retireBtn) {
       if (gameState.gameMode === 'endless' && gameState.day > 1) {
@@ -695,7 +1084,6 @@
       }
     }
 
-    // Configure input limits based on available cash
     const maxAffordableGlasses = Math.floor(gameState.assetsCents / gameState.costPerGlassCents);
     const glassesInput = document.getElementById('input-glasses');
     const glassesRange = document.getElementById('range-glasses');
@@ -704,7 +1092,6 @@
     const priceInput = document.getElementById('input-price');
     const priceRange = document.getElementById('range-price');
 
-    // Weather forecast suggested price
     const suggestedPrice =
       gameState.currentWeather === 'heatwave' || gameState.currentWeather === 'hot_dry'
         ? 15
@@ -712,7 +1099,6 @@
           ? 8
           : 10;
 
-    // Load carried-forward daily settings from local save state
     const carried = getCarriedSettings();
 
     let initialGlasses;
@@ -720,26 +1106,20 @@
     let initialPrice;
 
     if (carried && typeof carried.glasses === 'number' && !Number.isNaN(carried.glasses)) {
-      // Carry forward previous day setting, bounded by today's affordable max
       initialGlasses = Math.max(0, Math.min(carried.glasses, maxAffordableGlasses));
     } else {
-      // Day 1 default
       initialGlasses = Math.min(maxAffordableGlasses, Math.max(10, Math.min(35, maxAffordableGlasses)));
     }
 
     if (carried && typeof carried.signs === 'number' && !Number.isNaN(carried.signs)) {
-      // Carry forward previous day setting
       initialSigns = Math.max(0, carried.signs);
     } else {
-      // Day 1 default
       initialSigns = 1;
     }
 
     if (carried && typeof carried.price === 'number' && !Number.isNaN(carried.price) && carried.price > 0) {
-      // Weather forecast may suggest a price, but must NOT override the player's previous price
       initialPrice = Math.max(1, Math.min(100, carried.price));
     } else {
-      // Player has not yet set a price: use weather forecast suggested price
       initialPrice = suggestedPrice;
     }
 
@@ -800,7 +1180,7 @@
       signsRange.value = String(signs);
     }
 
-    let price = Math.max(1, Math.min(100, parseInt(priceInput.value, 10) || 10));
+    const price = Math.max(1, Math.min(100, parseInt(priceInput.value, 10) || 10));
 
     const glassesCost = glasses * gameState.costPerGlassCents;
     const signsCost = signs * SIGN_COST_CENTS;
@@ -907,7 +1287,6 @@
     document.getElementById('result-day-title').textContent = `Day ${r.day} Financial Report`;
     document.getElementById('result-stand-subtitle').textContent = `${gameState.standName} • ${r.weatherLabel} (${r.tempF}°F)`;
 
-    // Event callout
     document.getElementById('result-event-badge').textContent = r.eventBadge;
     document.getElementById('result-event-title').textContent = r.eventTitle;
     document.getElementById('result-event-desc').textContent =
@@ -915,7 +1294,6 @@
         ? `${r.eventDescription} (${r.signsLost} of your ${r.signsMade} signs blew away!)`
         : r.eventDescription;
 
-    // Metrics
     document.getElementById('res-glasses-sold').textContent = `${r.glassesSold} / ${r.glassesMade}`;
     document.getElementById('res-price-per-glass').textContent = `${r.pricePerGlass}¢`;
     document.getElementById('res-gross-income').textContent = formatCurrency(r.grossRevenueCents);
@@ -929,7 +1307,6 @@
 
     document.getElementById('res-ending-assets').textContent = formatCurrency(gameState.assetsCents);
 
-    // Check if run ends after today (Day 12 completed in Standard mode, or Bankrupt)
     const minNextDayCost = getBaseCostPerGlass(gameState.day + 1);
     const isBankrupt = gameState.assetsCents < minNextDayCost;
     const isFinalStandardDay = gameState.gameMode === 'standard' && gameState.day >= 12;
@@ -947,7 +1324,7 @@
   }
 
   /**
-   * Advance from Daily Results to either the next day or End-of-Run Summary.
+   * Advance from Daily Results to either the next day (using rollingSeed) or End-of-Run Summary.
    */
   function handleNextDayOrFinish() {
     if (!gameState) return;
@@ -961,15 +1338,15 @@
       return;
     }
 
-    // Advance to next day
+    // Advance to next day using rolling seed
     gameState.day += 1;
-    const nextCond = generateDayConditions(gameState.day);
+    gameState.rollingSeed = advanceRollingSeed(gameState.rollingSeed || gameState.runSeed || 1, gameState.day);
+    const nextCond = generateDayConditions(gameState.day, gameState.rollingSeed);
     gameState.currentWeather = nextCond.weatherKey;
     gameState.hasSupplyShortage = nextCond.hasSupplyShortage;
     gameState.costPerGlassCents = nextCond.costPerGlassCents;
     gameState.costReason = nextCond.costReason;
 
-    // Ensure previous day settings are carried forward if not already set
     if (!gameState.lastSettings && gameState.lastDayReport) {
       gameState.lastSettings = {
         glasses: gameState.lastDayReport.glassesMade,
@@ -1027,7 +1404,6 @@
     document.getElementById('summary-best-day-glasses').textContent =
       `${gameState.bestDayGlasses} glasses (Day ${gameState.bestGlassesDayNumber})`;
 
-    // Render day-by-day history table
     const tbody = document.getElementById('summary-log-tbody');
     if (tbody) {
       tbody.innerHTML = gameState.dayLog
@@ -1051,7 +1427,84 @@
   }
 
   /**
-   * Submit verified score to the backend API.
+   * Persist the player's most recent completed run metadata so leaderboards can highlight/circle "Last Run".
+   */
+  function saveLastRunInfo(entry) {
+    if (!entry || typeof entry !== 'object') return null;
+    const record = {
+      id: entry.id || '',
+      ids: entry.ids && typeof entry.ids === 'object' ? entry.ids : {},
+      date: entry.date || new Date().toISOString(),
+      stand_name: entry.stand_name || '',
+      score: entry.score,
+      stand_token: entry.stand_token || getStandTokenHash()
+    };
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(LAST_RUN_KEY, JSON.stringify(record));
+      }
+    } catch (_) {}
+    return record;
+  }
+
+  /**
+   * Load the player's most recent completed run metadata from localStorage.
+   */
+  function getLastRunInfo() {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const raw = localStorage.getItem(LAST_RUN_KEY);
+        if (raw) {
+          return JSON.parse(raw);
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /**
+   * Determine if a leaderboard entry corresponds to the current player's "Last Run"
+   * (assuming the player's last run is present on this leaderboard).
+   */
+  function isEntryLastRun(entry, allEntries, localTokenHash, lastRunInfo) {
+    if (!entry || !localTokenHash || entry.stand_token !== localTokenHash) {
+      return false;
+    }
+
+    // 1. If we have recorded the exact IDs of the player's most recent completed run, match by ID
+    if (lastRunInfo && typeof lastRunInfo === 'object') {
+      const idSet = new Set(
+        [lastRunInfo.id, ...Object.values(lastRunInfo.ids || {})].filter(Boolean)
+      );
+      if (idSet.size > 0) {
+        return idSet.has(entry.id);
+      }
+      if (lastRunInfo.date && entry.date === lastRunInfo.date) {
+        return true;
+      }
+    }
+
+    // 2. Fallback: among the current player's entries on this leaderboard, find the most recent timestamp
+    if (Array.isArray(allEntries)) {
+      const userEntries = allEntries.filter((e) => e && e.stand_token === localTokenHash);
+      if (userEntries.length === 0) return false;
+      let newestEntry = userEntries[0];
+      let newestTime = Date.parse(newestEntry.date || '') || 0;
+      for (const candidate of userEntries) {
+        const t = Date.parse(candidate.date || '') || 0;
+        if (t > newestTime) {
+          newestTime = t;
+          newestEntry = candidate;
+        }
+      }
+      return entry.id === newestEntry.id;
+    }
+
+    return false;
+  }
+
+  /**
+   * Submit server-verified score (with per-run seed & complete day_log) to the backend API.
    */
   async function submitRunScoreToServer() {
     if (!gameState || gameState.scoreSubmitted) return;
@@ -1061,18 +1514,13 @@
     }
 
     const daysPlayed = Math.max(1, gameState.dayLog.length || gameState.day);
-    const checksum = computeRunChecksum(
-      gameState.standName,
-      gameState.totalProfitCents,
-      gameState.totalGlassesSold,
-      gameState.bestDayProfitCents,
-      gameState.bestDayGlasses,
-      daysPlayed
-    );
 
     const payload = {
       stand_name: gameState.standName,
       stand_token: getOrCreateStandToken(),
+      run_id: gameState.runId || '',
+      run_seed: gameState.runSeed,
+      run_token: gameState.runToken || '',
       score: gameState.totalProfitCents,
       best_day_profit: gameState.bestDayProfitCents,
       best_day_number: gameState.bestDayNumber,
@@ -1086,8 +1534,7 @@
       game_mode: gameState.gameMode,
       days_played: daysPlayed,
       version: GAME_VERSION,
-      day_log: gameState.dayLog,
-      integrity_hash: checksum
+      day_log: gameState.dayLog
     };
 
     try {
@@ -1100,6 +1547,9 @@
       const data = await res.json();
       if (res.ok && data.ok) {
         gameState.scoreSubmitted = true;
+        if (data.entry) {
+          saveLastRunInfo(data.entry);
+        }
         if (statusEl) {
           statusEl.textContent = `✓ Score verified & saved to leaderboards under "${gameState.standName}"!`;
         }
@@ -1115,13 +1565,14 @@
 
   /**
    * Fetch and render the Leaderboards Screen.
+   * Uses sha256(localToken) to identify "You" rows without exposing raw tokens,
+   * and highlights/circles the user's "Last Run" if it is on the leaderboard.
    */
   async function renderLeaderboardsScreen(categoryOverride) {
     if (categoryOverride) {
       activeLeaderboardTab = categoryOverride;
     }
 
-    // Highlight active tab
     document.querySelectorAll('[data-lb-tab]').forEach((btn) => {
       if (btn.getAttribute('data-lb-tab') === activeLeaderboardTab) {
         btn.classList.add('ls-btn-primary');
@@ -1158,7 +1609,8 @@
       }
 
       const isGlassesMetric = data.unit === 'glasses' || activeLeaderboardTab.startsWith('glasses');
-      const localToken = getOrCreateStandToken();
+      const localTokenHash = getStandTokenHash();
+      const lastRunInfo = getLastRunInfo();
 
       tbody.innerHTML = data.entries
         .map((entry, index) => {
@@ -1170,15 +1622,23 @@
           const modeLabel =
             entry.mode === 'retro' ? 'RETRO ][e' : entry.mode === '8-bit' ? '8-BIT' : 'MODERN';
 
-          const isCurrentUser = Boolean(localToken && entry.stand_token && entry.stand_token === localToken);
+          const isCurrentUser = Boolean(localTokenHash && entry.stand_token && entry.stand_token === localTokenHash);
+          const isLastRun = isEntryLastRun(entry, data.entries, localTokenHash, lastRunInfo);
+
           const youIndicator = isCurrentUser
             ? ' <span class="you-indicator">🍋 &lt;=== You</span>'
             : '';
+          const lastRunBadge = isLastRun
+            ? ' <span class="last-run-badge" title="Your most recent completed run">⭕ LAST RUN</span>'
+            : '';
+          const rowHighlightClass = isLastRun
+            ? 'leaderboard-row-last-run'
+            : 'hover:bg-amber-500/5';
 
           return `
-            <tr class="border-b border-slate-200/25 hover:bg-amber-500/5">
+            <tr class="border-b border-slate-200/25 ${rowHighlightClass}">
               <td class="py-2.5 px-3 font-bold">#${rank}</td>
-              <td class="py-2.5 px-3 font-bold">${escapeHtml(entry.stand_name)}${youIndicator}</td>
+              <td class="py-2.5 px-3 font-bold">${escapeHtml(entry.stand_name)}${youIndicator}${lastRunBadge}</td>
               <td class="py-2.5 px-3 font-extrabold">${formattedScore}</td>
               <td class="py-2.5 px-3"><span class="ls-badge px-2 py-0.5 text-xs uppercase">${modeLabel}</span></td>
               <td class="py-2.5 px-3 text-xs opacity-80">${dateShort}</td>
@@ -1203,9 +1663,6 @@
       .replace(/'/g, '&#39;');
   }
 
-  /**
-   * Synchronize sound toggle UI state in navbar.
-   */
   function syncSoundToggleUI() {
     const enabled = root.LemonadeSound ? root.LemonadeSound.isEnabled() : true;
     const navBtn = document.getElementById('btn-nav-sound');
@@ -1220,7 +1677,6 @@
    * Bind all UI event listeners on DOMContentLoaded.
    */
   function initApp() {
-    // 1. Restore saved theme from localStorage
     let savedTheme = 'modern';
     try {
       savedTheme = localStorage.getItem(THEME_KEY) || 'modern';
@@ -1228,14 +1684,12 @@
     setTheme(savedTheme, false);
     syncSoundToggleUI();
 
-    // 2. Bind Three-Way Theme Toggle Buttons
     document.querySelectorAll('[data-theme-btn]').forEach((btn) => {
       btn.addEventListener('click', () => {
         setTheme(btn.getAttribute('data-theme-btn'), true);
       });
     });
 
-    // 3. Bind Sound Toggle Buttons
     document.querySelectorAll('[data-sound-toggle]').forEach((btn) => {
       btn.addEventListener('click', () => {
         if (root.LemonadeSound) {
@@ -1245,7 +1699,6 @@
       });
     });
 
-    // 4. Bind Title Screen Navigation
     document.getElementById('btn-continue-stand')?.addEventListener('click', () => {
       const saved = loadGameFromStorage();
       if (saved) {
@@ -1276,13 +1729,11 @@
       showScreen('title');
     });
 
-    // 5. Bind Stand Name Setup Form & Back Button
     document.getElementById('btn-setup-back')?.addEventListener('click', () => {
       if (root.LemonadeSound) root.LemonadeSound.play('click');
       showScreen('title');
     });
 
-    // 6. Bind Leaderboards Back to Game Button
     document.getElementById('btn-leaderboard-back')?.addEventListener('click', () => {
       if (root.LemonadeSound) root.LemonadeSound.play('click');
       if (gameState && !gameState.isFinished) {
@@ -1299,10 +1750,45 @@
       updateNicknameFeedback(e.target.value);
     });
 
+    // "Pick Your Stand Name" generator controls
+    const prefixSel = document.getElementById('name-gen-prefix');
+    const themeSel = document.getElementById('name-gen-theme');
+    const suffixSel = document.getElementById('name-gen-suffix');
+
+    function applyNameBuilderSelection() {
+      if (!nameInput || !ProfanityFilter.generateStandName) return;
+      const generated = ProfanityFilter.generateStandName({
+        prefix: prefixSel?.value || 'Sunny',
+        theme: themeSel?.value || 'Lemon',
+        suffix: suffixSel?.value || 'Cart'
+      });
+      nameInput.value = generated;
+      updateNicknameFeedback(generated);
+      if (root.LemonadeSound) root.LemonadeSound.play('click');
+    }
+
+    prefixSel?.addEventListener('change', applyNameBuilderSelection);
+    themeSel?.addEventListener('change', applyNameBuilderSelection);
+    suffixSel?.addEventListener('change', applyNameBuilderSelection);
+
+    document.getElementById('btn-random-stand-name')?.addEventListener('click', () => {
+      if (!nameInput || !ProfanityFilter.generateStandName) return;
+      if (prefixSel && ProfanityFilter.NAME_PREFIXES) {
+        prefixSel.value = ProfanityFilter.NAME_PREFIXES[Math.floor(Math.random() * prefixSel.options.length)] || prefixSel.value;
+      }
+      if (themeSel && ProfanityFilter.NAME_THEMES) {
+        themeSel.value = ProfanityFilter.NAME_THEMES[Math.floor(Math.random() * themeSel.options.length)] || themeSel.value;
+      }
+      if (suffixSel && ProfanityFilter.NAME_SUFFIXES) {
+        suffixSel.value = ProfanityFilter.NAME_SUFFIXES[Math.floor(Math.random() * suffixSel.options.length)] || suffixSel.value;
+      }
+      applyNameBuilderSelection();
+    });
+
     document.getElementById('setup-stand-form')?.addEventListener('submit', async (e) => {
       e.preventDefault();
       const rawName = nameInput ? nameInput.value : '';
-      const validation = root.ProfanityFilter.validateStandName(rawName);
+      const validation = ProfanityFilter.validateStandName(rawName);
 
       if (!validation.valid) {
         updateNicknameFeedback(rawName);
@@ -1310,13 +1796,22 @@
         return;
       }
 
-      // Also verify with backend endpoint if reachable
+      const selectedModeEl = document.querySelector('input[name="game-length-mode"]:checked');
+      const lengthMode = selectedModeEl ? selectedModeEl.value : 'standard';
+
+      let seedData = null;
+
+      // Request server-issued per-run seed & nickname validation
       try {
         const apiBase = window.LEMONADE_API_BASE || '';
-        const resp = await fetch(`${apiBase}/api/validate-nickname`, {
+        const resp = await fetch(`${apiBase}/api/run/start`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ stand_name: validation.sanitized })
+          body: JSON.stringify({
+            stand_name: validation.sanitized,
+            game_mode: lengthMode,
+            stand_token: getOrCreateStandToken()
+          })
         });
         if (resp.status === 400) {
           const feedback = document.getElementById('stand-name-feedback');
@@ -1327,34 +1822,38 @@
           if (root.LemonadeSound) root.LemonadeSound.play('error');
           return;
         }
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data && data.ok && data.run_seed) {
+            seedData = {
+              runId: data.run_id,
+              runSeed: data.run_seed,
+              runToken: data.run_token
+            };
+          }
+        }
       } catch (_) {
-        // Offline fallback relies on client-side strict filter
+        // Offline fallback
       }
 
-      // Completely silent success: clear any error feedback
       const feedback = document.getElementById('stand-name-feedback');
       if (feedback) {
         feedback.textContent = '';
         feedback.className = 'text-xs mt-2 hidden text-red-500 font-semibold';
       }
 
-      // Store accepted nickname in localStorage
       try {
         localStorage.setItem(NICKNAME_KEY, validation.sanitized);
       } catch (_) {}
 
-      const selectedModeEl = document.querySelector('input[name="game-length-mode"]:checked');
-      const lengthMode = selectedModeEl ? selectedModeEl.value : 'standard';
-
       clearSavedGame();
-      gameState = createNewGameState(validation.sanitized, lengthMode);
+      gameState = createNewGameState(validation.sanitized, lengthMode, seedData);
       saveGameToStorage();
 
       if (root.LemonadeSound) root.LemonadeSound.play('dayStart');
       showScreen('decision');
     });
 
-    // 7. Bind Decision Sliders & Number Inputs
     function recordLiveSettings() {
       if (!gameState) return;
       const g = parseInt(document.getElementById('input-glasses')?.value, 10);
@@ -1397,10 +1896,8 @@
       }
     });
 
-    // 8. Bind Daily Results Next Day Button
     document.getElementById('btn-next-day')?.addEventListener('click', handleNextDayOrFinish);
 
-    // 9. Bind Summary Screen Buttons
     document.getElementById('btn-summary-play-again')?.addEventListener('click', () => {
       if (root.LemonadeSound) root.LemonadeSound.play('click');
       showScreen('setup');
@@ -1411,7 +1908,6 @@
       showScreen('leaderboards');
     });
 
-    // 10. Bind Leaderboard Category Tabs & Mode Filter
     document.querySelectorAll('[data-lb-tab]').forEach((btn) => {
       btn.addEventListener('click', () => {
         if (root.LemonadeSound) root.LemonadeSound.play('click');
@@ -1425,7 +1921,6 @@
       renderLeaderboardsScreen();
     });
 
-    // Initial render
     renderTitleScreen();
   }
 
@@ -1437,14 +1932,34 @@
     }
   }
 
-  root.LemonadeGame = {
+  const exportedApi = {
     WEATHER_TYPES,
     RANDOM_EVENTS,
-    computeRunChecksum,
+    STARTING_ASSETS_CENTS,
+    SIGN_COST_CENTS,
+    STAND_TOKEN_REGEX,
+    sha256Hex,
+    generateRandomStandToken,
+    getOrCreateStandToken,
+    getStandTokenHash,
+    saveLastRunInfo,
+    getLastRunInfo,
+    isEntryLastRun,
+    advanceRollingSeed,
+    createSeededRng,
+    getBaseCostPerGlass,
+    generateDayConditions,
     simulateDayOutcome,
+    replayRun,
+    simulateAutomatedRun,
     createNewGameState,
     getCarriedSettings,
     setTheme,
     showScreen
   };
+
+  root.LemonadeGame = exportedApi;
+  if (typeof module === 'object' && module.exports) {
+    module.exports = exportedApi;
+  }
 })(typeof globalThis !== 'undefined' ? globalThis : window);

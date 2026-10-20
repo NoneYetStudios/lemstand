@@ -512,3 +512,67 @@ body.theme-modern .you-indicator {
   color: #d97706;
 }
 
+/* Highlighted & Circled "Last Run" on Leaderboards */
+tr.leaderboard-row-last-run {
+  position: relative;
+}
+
+body.theme-modern tr.leaderboard-row-last-run {
+  background: linear-gradient(90deg, rgba(254, 243, 199, 0.85) 0%, rgba(253, 230, 138, 0.45) 100%);
+  outline: 2px solid #f59e0b;
+  outline-offset: -2px;
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.22);
+}
+
+body.theme-retro tr.leaderboard-row-last-run {
+  background-color: rgba(51, 255, 51, 0.14);
+  outline: 2px solid #33ff33;
+  outline-offset: -2px;
+  box-shadow: inset 0 0 10px rgba(51, 255, 51, 0.28);
+}
+
+body.theme-8bit tr.leaderboard-row-last-run {
+  background-color: rgba(255, 205, 117, 0.16);
+  outline: 2px dashed #ffcd75;
+  outline-offset: -2px;
+}
+
+.last-run-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 0.45rem;
+  padding: 0.1rem 0.55rem;
+  border: 2px solid #d97706;
+  border-radius: 9999px;
+  background-color: #fef3c7;
+  color: #92400e;
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
+}
+
+body.theme-retro .last-run-badge {
+  border: 1.5px solid #33ff33;
+  border-radius: 9999px;
+  background-color: #33ff33;
+  color: #040b04;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-shadow: none;
+  box-shadow: 0 0 6px rgba(51, 255, 51, 0.55);
+}
+
+body.theme-8bit .last-run-badge {
+  border: 2px solid #ffcd75;
+  border-radius: 9999px;
+  background-color: #181425;
+  color: #ffcd75;
+  font-size: 0.58rem;
+  padding: 0.15rem 0.45rem;
+  box-shadow: 2px 2px 0px #0d0e17;
+}
+
+

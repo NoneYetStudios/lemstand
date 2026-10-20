@@ -9,7 +9,8 @@ primary_region = "ord"
   NODE_ENV = "production"
   PORT = "8080"
   DB_PATH = "/data/lemonadestand.db"
-  ALLOWED_ORIGINS = "https://lemonadestand.stabthefinger.com"
+  TRUST_PROXY = "2"
+  ALLOWED_ORIGINS = "*"
 
 [[mounts]]
   source = "lemonade_sqlite_data"

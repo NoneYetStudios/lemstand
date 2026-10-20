@@ -128,22 +128,69 @@
         <form id="setup-stand-form" class="space-y-6" novalidate>
           <!-- Stand Name Input -->
           <div>
-            <label for="stand-name-input" class="block text-sm font-bold mb-2">
-              Choose your Stand Name
-            </label>
+            <div class="flex items-center justify-between mb-2">
+              <label for="stand-name-input" class="block text-sm font-bold">
+                Choose your Stand Name
+              </label>
+              <button id="btn-random-stand-name" type="button" class="ls-btn-secondary px-2.5 py-1 text-xs font-bold">
+                🎲 Random Name
+              </button>
+            </div>
             <input
               id="stand-name-input"
               name="stand_name"
               type="text"
               minlength="3"
-              maxlength="12"
-              pattern="^[A-Za-z0-9_]{3,12}$"
-              placeholder="e.g. Sunny_Cups"
+              maxlength="18"
+              pattern="^[A-Za-z0-9_]{3,18}$"
+              placeholder="e.g. SunnyLemonCart"
               autocomplete="off"
               required
               class="ls-input w-full px-4 py-3 text-base font-bold"
             />
             <p id="stand-name-feedback" class="text-xs mt-2 hidden text-red-500 font-semibold" role="status" aria-live="polite"></p>
+
+            <!-- Pick Your Stand Name Generator (Sunny + Lemon + Cart) -->
+            <div class="ls-panel-muted p-3 mt-3 space-y-2">
+              <div class="text-xs font-bold opacity-80">Pick Your Stand Name Builder:</div>
+              <div class="grid grid-cols-3 gap-2">
+                <select id="name-gen-prefix" aria-label="Stand Name Prefix" class="ls-input px-2 py-1.5 text-xs font-bold">
+                  <option value="Sunny">Sunny</option>
+                  <option value="Golden">Golden</option>
+                  <option value="Fresh">Fresh</option>
+                  <option value="Cool">Cool</option>
+                  <option value="Sweet">Sweet</option>
+                  <option value="Tangy">Tangy</option>
+                  <option value="Zesty">Zesty</option>
+                  <option value="Pixel">Pixel</option>
+                  <option value="Retro">Retro</option>
+                  <option value="Happy">Happy</option>
+                </select>
+                <select id="name-gen-theme" aria-label="Stand Name Theme" class="ls-input px-2 py-1.5 text-xs font-bold">
+                  <option value="Lemon">Lemon</option>
+                  <option value="Citrus">Citrus</option>
+                  <option value="Lime">Lime</option>
+                  <option value="Berry">Berry</option>
+                  <option value="Honey">Honey</option>
+                  <option value="Peach">Peach</option>
+                  <option value="Mint">Mint</option>
+                  <option value="Apple">Apple</option>
+                  <option value="Melon">Melon</option>
+                  <option value="Sugar">Sugar</option>
+                </select>
+                <select id="name-gen-suffix" aria-label="Stand Name Suffix" class="ls-input px-2 py-1.5 text-xs font-bold">
+                  <option value="Cart">Cart</option>
+                  <option value="Stand">Stand</option>
+                  <option value="Cups">Cups</option>
+                  <option value="Drop">Drop</option>
+                  <option value="Press">Press</option>
+                  <option value="Shack">Shack</option>
+                  <option value="Booth">Booth</option>
+                  <option value="Jug">Jug</option>
+                  <option value="Bar">Bar</option>
+                </select>
+              </div>
+            </div>
           </div>
 
           <!-- Game Length Selector -->

@@ -1,128 +1,92 @@
 /**
  * Lemonade Stand - SQLite Database Layer
  * Uses parameterized prepared statements via node:sqlite to prevent SQL injection.
+ * Enforces canonical schema.sql, SHA-256 hashed stand tokens, per-run seeds, and transactional leaderboard pruning.
  */
 'use strict';
+
+// Explicitly filter only the node:sqlite ExperimentalWarning so --no-warnings is not required
+const originalEmitWarning = process.emitWarning;
+process.emitWarning = function (warning, ...args) {
+  const type = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].type);
+  const name = warning && typeof warning === 'object' ? warning.name : '';
+  const msg = typeof warning === 'string' ? warning : (warning && warning.message) || '';
+  if ((type === 'ExperimentalWarning' || name === 'ExperimentalWarning') && /sqlite/i.test(msg)) {
+    return;
+  }
+  return originalEmitWarning.call(this, warning, ...args);
+};
 
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const { validateStandName } = require('./profanityFilter');
+const { STAND_TOKEN_REGEX } = require('../../frontend/js/game');
 
 const DEFAULT_DB_PATH = process.env.DB_PATH || path.resolve(__dirname, '../data/lemonadestand.db');
 const SCHEMA_PATH = path.resolve(__dirname, '../../schema.sql');
+const RUN_TOKEN_SECRET = process.env.RUN_TOKEN_SECRET || 'lemstand-server-seed-hmac-key-v2';
 
 let dbInstance = null;
 
-const EMBEDDED_SCHEMA = `
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
-
-CREATE TABLE IF NOT EXISTS leaderboard_daily (
-    id TEXT PRIMARY KEY,
-    stand_name TEXT NOT NULL,
-    score INTEGER NOT NULL,
-    date TEXT NOT NULL,
-    mode TEXT NOT NULL CHECK (mode IN ('retro', '8-bit', 'modern')),
-    version TEXT NOT NULL DEFAULT '1.0.0',
-    game_mode TEXT NOT NULL DEFAULT 'standard',
-    days_played INTEGER NOT NULL DEFAULT 12,
-    stand_token TEXT DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_daily_score_date ON leaderboard_daily (score DESC, date DESC);
-
-CREATE TABLE IF NOT EXISTS leaderboard_weekly (
-    id TEXT PRIMARY KEY,
-    stand_name TEXT NOT NULL,
-    score INTEGER NOT NULL,
-    date TEXT NOT NULL,
-    mode TEXT NOT NULL CHECK (mode IN ('retro', '8-bit', 'modern')),
-    version TEXT NOT NULL DEFAULT '1.0.0',
-    game_mode TEXT NOT NULL DEFAULT 'standard',
-    days_played INTEGER NOT NULL DEFAULT 12,
-    stand_token TEXT DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_weekly_score_date ON leaderboard_weekly (score DESC, date DESC);
-
-CREATE TABLE IF NOT EXISTS leaderboard_all_time (
-    id TEXT PRIMARY KEY,
-    stand_name TEXT NOT NULL,
-    score INTEGER NOT NULL,
-    date TEXT NOT NULL,
-    mode TEXT NOT NULL CHECK (mode IN ('retro', '8-bit', 'modern')),
-    version TEXT NOT NULL DEFAULT '1.0.0',
-    game_mode TEXT NOT NULL DEFAULT 'standard',
-    days_played INTEGER NOT NULL DEFAULT 12,
-    stand_token TEXT DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_all_time_score ON leaderboard_all_time (score DESC, date DESC);
-
-CREATE TABLE IF NOT EXISTS leaderboard_best_day (
-    id TEXT PRIMARY KEY,
-    stand_name TEXT NOT NULL,
-    score INTEGER NOT NULL,
-    date TEXT NOT NULL,
-    mode TEXT NOT NULL CHECK (mode IN ('retro', '8-bit', 'modern')),
-    version TEXT NOT NULL DEFAULT '1.0.0',
-    day_number INTEGER NOT NULL DEFAULT 1,
-    weather TEXT DEFAULT 'sunny',
-    stand_token TEXT DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_best_day_score ON leaderboard_best_day (score DESC, date DESC);
-
-CREATE TABLE IF NOT EXISTS leaderboard_best_run (
-    id TEXT PRIMARY KEY,
-    stand_name TEXT NOT NULL,
-    score INTEGER NOT NULL,
-    date TEXT NOT NULL,
-    mode TEXT NOT NULL CHECK (mode IN ('retro', '8-bit', 'modern')),
-    version TEXT NOT NULL DEFAULT '1.0.0',
-    final_assets INTEGER NOT NULL DEFAULT 200,
-    stand_token TEXT DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_best_run_score ON leaderboard_best_run (score DESC, date DESC);
-
-CREATE TABLE IF NOT EXISTS leaderboard_glasses_day (
-    id TEXT PRIMARY KEY,
-    stand_name TEXT NOT NULL,
-    score INTEGER NOT NULL,
-    date TEXT NOT NULL,
-    mode TEXT NOT NULL CHECK (mode IN ('retro', '8-bit', 'modern')),
-    version TEXT NOT NULL DEFAULT '1.0.0',
-    day_number INTEGER NOT NULL DEFAULT 1,
-    weather TEXT DEFAULT 'sunny',
-    stand_token TEXT DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_glasses_day_score ON leaderboard_glasses_day (score DESC, date DESC);
-
-CREATE TABLE IF NOT EXISTS leaderboard_glasses_run (
-    id TEXT PRIMARY KEY,
-    stand_name TEXT NOT NULL,
-    score INTEGER NOT NULL,
-    date TEXT NOT NULL,
-    mode TEXT NOT NULL CHECK (mode IN ('retro', '8-bit', 'modern')),
-    version TEXT NOT NULL DEFAULT '1.0.0',
-    game_mode TEXT NOT NULL DEFAULT 'standard',
-    days_played INTEGER NOT NULL DEFAULT 12,
-    stand_token TEXT DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_glasses_run_score ON leaderboard_glasses_run (score DESC, date DESC);
-
-CREATE TABLE IF NOT EXISTS game_saves (
-    stand_token TEXT PRIMARY KEY,
-    stand_name TEXT NOT NULL,
-    game_state TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_game_saves_token ON game_saves (stand_token);
-`;
+/**
+ * Hash a raw client stand token using SHA-256.
+ * Raw stand tokens are never stored in the database or returned in API responses.
+ */
+function hashStandToken(rawToken) {
+  if (!rawToken || typeof rawToken !== 'string') return '';
+  const trimmed = rawToken.trim();
+  if (!trimmed) return '';
+  return crypto.createHash('sha256').update(trimmed, 'utf8').digest('hex');
+}
 
 /**
- * Migrate existing SQLite tables to include stand_token column if created previously.
+ * Validate that a candidate raw stand token matches the 16-24 alphanumeric format.
+ */
+function isValidRawStandToken(rawToken) {
+  return typeof rawToken === 'string' && STAND_TOKEN_REGEX.test(rawToken.trim());
+}
+
+/**
+ * Compute HMAC-SHA256 signature for a server-issued per-run seed.
+ */
+function signRunSeed(runId, runSeed, standName, gameMode) {
+  const payload = `${runId}|${Number(runSeed) >>> 0}|${String(standName).toLowerCase()}|${gameMode || 'standard'}`;
+  return crypto.createHmac('sha256', RUN_TOKEN_SECRET).update(payload, 'utf8').digest('hex');
+}
+
+/**
+ * Verify HMAC-SHA256 signature for a server-issued per-run seed.
+ */
+function verifyRunSeedToken(runId, runSeed, standName, gameMode, runToken) {
+  if (!runId || !runSeed || !standName || !runToken || typeof runToken !== 'string') {
+    return false;
+  }
+  const expected = signRunSeed(runId, runSeed, standName, gameMode);
+  if (expected.length !== runToken.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(expected, 'utf8'), Buffer.from(runToken, 'utf8'));
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Load canonical schema.sql from the repository root.
+ */
+function loadCanonicalSchema() {
+  if (!fs.existsSync(SCHEMA_PATH)) {
+    throw new Error(`Canonical schema file not found at ${SCHEMA_PATH}`);
+  }
+  return fs.readFileSync(SCHEMA_PATH, 'utf8');
+}
+
+/**
+ * Apply migrations to existing SQLite tables without hiding failures.
  */
 function ensureMigrations(db) {
-  const tables = [
+  const leaderboardTables = [
     'leaderboard_daily',
     'leaderboard_weekly',
     'leaderboard_all_time',
@@ -131,31 +95,21 @@ function ensureMigrations(db) {
     'leaderboard_glasses_day',
     'leaderboard_glasses_run'
   ];
-  for (const table of tables) {
-    try {
-      const cols = db.prepare(`PRAGMA table_info(${table})`).all();
-      const hasToken = cols.some((c) => c.name === 'stand_token');
-      if (!hasToken) {
-        db.exec(`ALTER TABLE ${table} ADD COLUMN stand_token TEXT DEFAULT ''`);
-      }
-    } catch (_) {}
-  }
 
-  try {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS game_saves (
-          stand_token TEXT PRIMARY KEY,
-          stand_name TEXT NOT NULL,
-          game_state TEXT NOT NULL,
-          updated_at TEXT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_game_saves_token ON game_saves (stand_token);
-    `);
-  } catch (_) {}
+  for (const table of leaderboardTables) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+    if (cols.length === 0) {
+      throw new Error(`Expected table ${table} to exist after applying schema.sql`);
+    }
+    const hasToken = cols.some((c) => c.name === 'stand_token');
+    if (!hasToken) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN stand_token TEXT DEFAULT ''`);
+    }
+  }
 }
 
 /**
- * Initialize and return the singleton SQLite database instance.
+ * Initialize and return the SQLite database instance.
  */
 function getDb(customPath) {
   if (dbInstance && !customPath) {
@@ -171,9 +125,7 @@ function getDb(customPath) {
   }
 
   const db = new DatabaseSync(targetPath);
-  const schemaSql = fs.existsSync(SCHEMA_PATH)
-    ? fs.readFileSync(SCHEMA_PATH, 'utf8')
-    : EMBEDDED_SCHEMA;
+  const schemaSql = loadCanonicalSchema();
 
   db.exec(schemaSql);
   ensureMigrations(db);
@@ -188,7 +140,71 @@ function getDb(customPath) {
     seedInitialData(db);
   }
 
+  // Run initial leaderboard pruning
+  pruneLeaderboards(db);
+
   return db;
+}
+
+/**
+ * Issue and record a server-side per-run seed when a new stand begins.
+ */
+function createRunSession(db, { standName, gameMode = 'standard', standToken = '' }) {
+  const check = validateStandName(standName);
+  if (!check.valid) {
+    throw new Error(check.reason);
+  }
+  const normalizedGameMode = gameMode === 'endless' ? 'endless' : 'standard';
+  const runId = crypto.randomUUID();
+  const runSeed = crypto.randomInt(1, 0x7fffffff);
+  const tokenHash = isValidRawStandToken(standToken) ? hashStandToken(standToken) : '';
+  const createdAt = new Date().toISOString();
+  const runToken = signRunSeed(runId, runSeed, check.sanitized, normalizedGameMode);
+
+  if (db) {
+    db.prepare(`
+      INSERT INTO game_runs (run_id, run_seed, stand_name, game_mode, stand_token, created_at, used)
+      VALUES (?, ?, ?, ?, ?, ?, 0)
+    `).run(runId, runSeed, check.sanitized, normalizedGameMode, tokenHash, createdAt);
+  }
+
+  return {
+    run_id: runId,
+    run_seed: runSeed,
+    run_token: runToken,
+    stand_name: check.sanitized,
+    game_mode: normalizedGameMode,
+    created_at: createdAt
+  };
+}
+
+/**
+ * Verify that a per-run seed was issued by the server and has not yet been used, then mark it consumed.
+ */
+function verifyAndConsumeRunSession(db, { runId, runSeed, standName, gameMode, runToken }) {
+  if (!verifyRunSeedToken(runId, runSeed, standName, gameMode, runToken)) {
+    return { valid: false, code: 'INVALID_RUN_TOKEN', error: 'Invalid or forged server run token.' };
+  }
+
+  if (db) {
+    const row = db.prepare('SELECT run_id, run_seed, stand_name, game_mode, used FROM game_runs WHERE run_id = ?').get(runId);
+    if (!row) {
+      return { valid: false, code: 'UNKNOWN_RUN_ID', error: 'Run session not found on server.' };
+    }
+    if (Number(row.used) !== 0) {
+      return { valid: false, code: 'RUN_ALREADY_SUBMITTED', error: 'Score for this run has already been submitted.' };
+    }
+    if (
+      Number(row.run_seed) !== Number(runSeed) ||
+      String(row.stand_name).toLowerCase() !== String(standName).toLowerCase() ||
+      row.game_mode !== gameMode
+    ) {
+      return { valid: false, code: 'RUN_METADATA_MISMATCH', error: 'Run metadata does not match server session.' };
+    }
+    db.prepare('UPDATE game_runs SET used = 1 WHERE run_id = ?').run(runId);
+  }
+
+  return { valid: true };
 }
 
 /**
@@ -203,6 +219,7 @@ function seedInitialData(db) {
   const starterRuns = [
     {
       stand_name: 'Apple_IIe',
+      stand_token: 'StarterSeedToken0001',
       score: 3480,
       best_day_profit: 640,
       best_day_number: 9,
@@ -217,6 +234,7 @@ function seedInitialData(db) {
     },
     {
       stand_name: 'Pixel_Press',
+      stand_token: 'StarterSeedToken0002',
       score: 2950,
       best_day_profit: 520,
       best_day_number: 7,
@@ -231,6 +249,7 @@ function seedInitialData(db) {
     },
     {
       stand_name: 'Citrus_Drop',
+      stand_token: 'StarterSeedToken0003',
       score: 2640,
       best_day_profit: 475,
       best_day_number: 5,
@@ -245,6 +264,7 @@ function seedInitialData(db) {
     },
     {
       stand_name: 'Woz_Lemons',
+      stand_token: 'StarterSeedToken0004',
       score: 2210,
       best_day_profit: 410,
       best_day_number: 11,
@@ -259,6 +279,7 @@ function seedInitialData(db) {
     },
     {
       stand_name: 'Sunny_Cups',
+      stand_token: 'StarterSeedToken0005',
       score: 1890,
       best_day_profit: 360,
       best_day_number: 4,
@@ -273,6 +294,7 @@ function seedInitialData(db) {
     },
     {
       stand_name: 'Bit_Breeze',
+      stand_token: 'StarterSeedToken0006',
       score: 1540,
       best_day_profit: 310,
       best_day_number: 6,
@@ -294,16 +316,21 @@ function seedInitialData(db) {
 
 /**
  * Insert a validated score record across the leaderboard tables in a transaction.
+ * Stores and returns only sha256(stand_token), never the raw token.
  */
 function insertScoreRecord(db, data, customDateIso) {
-  // Double-check profanity filter at DB boundary
   const check = validateStandName(data.stand_name);
   if (!check.valid) {
     throw new Error(`Rejected Stand Name at DB layer: ${check.reason}`);
   }
 
   const timestamp = customDateIso || new Date().toISOString();
-  const standToken = typeof data.stand_token === 'string' ? data.stand_token : '';
+  const rawOrHashed = typeof data.stand_token_hash === 'string' && /^[a-f0-9]{64}$/.test(data.stand_token_hash)
+    ? data.stand_token_hash
+    : (typeof data.stand_token === 'string' && data.stand_token
+        ? (/^[a-f0-9]{64}$/.test(data.stand_token) ? data.stand_token : hashStandToken(data.stand_token))
+        : '');
+
   const ids = {
     daily: crypto.randomUUID(),
     weekly: crypto.randomUUID(),
@@ -320,19 +347,19 @@ function insertScoreRecord(db, data, customDateIso) {
     db.prepare(`
       INSERT INTO leaderboard_daily (id, stand_name, score, date, mode, version, game_mode, days_played, stand_token)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(ids.daily, check.sanitized, data.score, timestamp, data.mode, data.version, data.game_mode, data.days_played, standToken);
+    `).run(ids.daily, check.sanitized, data.score, timestamp, data.mode, data.version, data.game_mode, data.days_played, rawOrHashed);
 
     // 2. Weekly
     db.prepare(`
       INSERT INTO leaderboard_weekly (id, stand_name, score, date, mode, version, game_mode, days_played, stand_token)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(ids.weekly, check.sanitized, data.score, timestamp, data.mode, data.version, data.game_mode, data.days_played, standToken);
+    `).run(ids.weekly, check.sanitized, data.score, timestamp, data.mode, data.version, data.game_mode, data.days_played, rawOrHashed);
 
     // 3. All-time
     db.prepare(`
       INSERT INTO leaderboard_all_time (id, stand_name, score, date, mode, version, game_mode, days_played, stand_token)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(ids.all_time, check.sanitized, data.score, timestamp, data.mode, data.version, data.game_mode, data.days_played, standToken);
+    `).run(ids.all_time, check.sanitized, data.score, timestamp, data.mode, data.version, data.game_mode, data.days_played, rawOrHashed);
 
     // 4. Best single-day profit
     if (data.best_day_profit !== undefined && data.best_day_profit > 0) {
@@ -348,7 +375,7 @@ function insertScoreRecord(db, data, customDateIso) {
         data.version,
         data.best_day_number || 1,
         data.best_day_weather || 'sunny',
-        standToken
+        rawOrHashed
       );
     }
 
@@ -365,7 +392,7 @@ function insertScoreRecord(db, data, customDateIso) {
         data.mode,
         data.version,
         data.final_assets || (200 + data.score),
-        standToken
+        rawOrHashed
       );
     }
 
@@ -383,7 +410,7 @@ function insertScoreRecord(db, data, customDateIso) {
         data.version,
         data.best_glasses_day_number || 1,
         data.best_glasses_weather || 'sunny',
-        standToken
+        rawOrHashed
       );
     }
 
@@ -401,7 +428,7 @@ function insertScoreRecord(db, data, customDateIso) {
         data.version,
         data.game_mode,
         data.days_played,
-        standToken
+        rawOrHashed
       );
     }
 
@@ -419,7 +446,7 @@ function insertScoreRecord(db, data, customDateIso) {
     date: timestamp,
     mode: data.mode,
     version: data.version,
-    stand_token: standToken
+    stand_token: rawOrHashed
   };
 }
 
@@ -435,6 +462,7 @@ const TABLE_MAP = {
 
 /**
  * Fetch entries from a specific leaderboard table with optional visual mode filter and limit.
+ * Never returns raw tokens; stand_token is always the SHA-256 hash.
  */
 function fetchLeaderboard(db, category, options = {}) {
   const tableName = TABLE_MAP[category];
@@ -451,12 +479,10 @@ function fetchLeaderboard(db, category, options = {}) {
   const params = [];
 
   if (category === 'daily') {
-    // Rolling 24 hours
     const cutoff = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     whereClauses.push('date >= ?');
     params.push(cutoff);
   } else if (category === 'weekly') {
-    // Rolling 7 days
     const cutoff = new Date(Date.now() - 7 * 86400 * 1000).toISOString();
     whereClauses.push('date >= ?');
     params.push(cutoff);
@@ -478,27 +504,76 @@ function fetchLeaderboard(db, category, options = {}) {
   params.push(limit);
 
   const rows = db.prepare(sql).all(...params);
-  return rows.map((row, idx) => ({
-    rank: idx + 1,
-    id: row.id,
-    stand_name: row.stand_name,
-    score: row.score,
-    date: row.date,
-    mode: row.mode,
-    version: row.version,
-    stand_token: row.stand_token || ''
-  }));
+  return rows.map((row, idx) => {
+    const storedToken = row.stand_token || '';
+    const safeTokenHash = storedToken && !/^[a-f0-9]{64}$/.test(storedToken)
+      ? hashStandToken(storedToken)
+      : storedToken;
+    return {
+      rank: idx + 1,
+      id: row.id,
+      stand_name: row.stand_name,
+      score: row.score,
+      date: row.date,
+      mode: row.mode,
+      version: row.version,
+      stand_token: safeTokenHash
+    };
+  });
+}
+
+/**
+ * Transactional pruning for leaderboard_daily, leaderboard_weekly, and expired sessions.
+ * Keeps N days of daily history and N weeks of weekly history.
+ */
+function pruneLeaderboards(db, options = {}) {
+  const dailyDays = Math.max(1, Number(options.dailyDays ?? process.env.DAILY_RETENTION_DAYS ?? 7));
+  const weeklyWeeks = Math.max(1, Number(options.weeklyWeeks ?? process.env.WEEKLY_RETENTION_WEEKS ?? 4));
+  const nowMs = options.now instanceof Date
+    ? options.now.getTime()
+    : (typeof options.now === 'number' ? options.now : Date.now());
+
+  const dailyCutoff = new Date(nowMs - dailyDays * 86400 * 1000).toISOString();
+  const weeklyCutoff = new Date(nowMs - weeklyWeeks * 7 * 86400 * 1000).toISOString();
+  const runCutoff = new Date(nowMs - 7 * 86400 * 1000).toISOString();
+
+  db.exec('BEGIN IMMEDIATE TRANSACTION');
+  try {
+    const dailyRes = db.prepare('DELETE FROM leaderboard_daily WHERE date < ?').run(dailyCutoff);
+    const weeklyRes = db.prepare('DELETE FROM leaderboard_weekly WHERE date < ?').run(weeklyCutoff);
+    const runsRes = db.prepare('DELETE FROM game_runs WHERE created_at < ? OR used = 1').run(runCutoff);
+    db.exec('COMMIT');
+
+    return {
+      ok: true,
+      prunedDaily: Number(dailyRes.changes || 0),
+      prunedWeekly: Number(weeklyRes.changes || 0),
+      prunedRuns: Number(runsRes.changes || 0),
+      dailyCutoff,
+      weeklyCutoff
+    };
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 /**
  * Save active game state (with carry-forward daily settings) to SQLite.
+ * Keys by sha256(rawStandToken) and requires a valid 16-24 char raw token so another player's
+ * save can never be overwritten using a leaderboard hash.
  */
-function saveGameState(db, standToken, state) {
-  if (!standToken || typeof standToken !== 'string') {
+function saveGameState(db, rawStandToken, state) {
+  if (!isValidRawStandToken(rawStandToken)) {
     throw new Error('Invalid stand token');
   }
-  const stateJson = typeof state === 'string' ? state : JSON.stringify(state);
-  const standName = (state && state.standName) || 'Lemonade Stand';
+  const tokenHash = hashStandToken(rawStandToken);
+  const cleanState = { ...(typeof state === 'string' ? JSON.parse(state) : state) };
+  delete cleanState.stand_token;
+  delete cleanState.standToken;
+
+  const stateJson = JSON.stringify(cleanState);
+  const standName = (cleanState && cleanState.standName) || 'Lemonade Stand';
   const now = new Date().toISOString();
 
   const stmt = db.prepare(`
@@ -509,42 +584,54 @@ function saveGameState(db, standToken, state) {
       game_state = excluded.game_state,
       updated_at = excluded.updated_at
   `);
-  stmt.run(standToken, standName, stateJson, now);
+  stmt.run(tokenHash, standName, stateJson, now);
   return { ok: true, updated_at: now };
 }
 
 /**
- * Retrieve active saved game state for a stand token.
+ * Retrieve active saved game state for a raw stand token.
  */
-function loadGameState(db, standToken) {
-  if (!standToken || typeof standToken !== 'string') {
+function loadGameState(db, rawStandToken) {
+  if (!isValidRawStandToken(rawStandToken)) {
     return null;
   }
-  const row = db.prepare('SELECT game_state FROM game_saves WHERE stand_token = ?').get(standToken);
+  const tokenHash = hashStandToken(rawStandToken);
+  const row = db.prepare('SELECT game_state FROM game_saves WHERE stand_token = ?').get(tokenHash);
   if (!row || !row.game_state) return null;
   try {
-    return JSON.parse(row.game_state);
+    const parsed = JSON.parse(row.game_state);
+    delete parsed.stand_token;
+    delete parsed.standToken;
+    return parsed;
   } catch (_) {
     return null;
   }
 }
 
 /**
- * Remove active saved game state from SQLite.
+ * Remove active saved game state from SQLite using the player's raw stand token.
  */
-function deleteGameState(db, standToken) {
-  if (!standToken || typeof standToken !== 'string') {
+function deleteGameState(db, rawStandToken) {
+  if (!isValidRawStandToken(rawStandToken)) {
     return { ok: false };
   }
-  db.prepare('DELETE FROM game_saves WHERE stand_token = ?').run(standToken);
+  const tokenHash = hashStandToken(rawStandToken);
+  db.prepare('DELETE FROM game_saves WHERE stand_token = ?').run(tokenHash);
   return { ok: true };
 }
 
 module.exports = {
   getDb,
+  hashStandToken,
+  isValidRawStandToken,
+  signRunSeed,
+  verifyRunSeedToken,
+  createRunSession,
+  verifyAndConsumeRunSession,
   seedInitialData,
   insertScoreRecord,
   fetchLeaderboard,
+  pruneLeaderboards,
   saveGameState,
   loadGameState,
   deleteGameState,

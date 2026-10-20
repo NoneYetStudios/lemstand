@@ -1,7 +1,7 @@
 /**
  * Lemonade Stand - Express API & Static Server
- * Production-ready backend with SQLite leaderboards, strict family-friendly filtering,
- * rate limiting, and anti-cheat score integrity validation.
+ * Production-ready backend with SQLite leaderboards, shared family-friendly filtering,
+ * proxy-accurate rate limiting, and server-side simulation replay anti-cheat verification.
  */
 'use strict';
 
@@ -11,18 +11,72 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 
-const { getDb, insertScoreRecord, fetchLeaderboard, saveGameState, loadGameState, deleteGameState } = require('./src/db');
+const {
+  getDb,
+  isValidRawStandToken,
+  createRunSession,
+  insertScoreRecord,
+  fetchLeaderboard,
+  pruneLeaderboards,
+  saveGameState,
+  loadGameState,
+  deleteGameState
+} = require('./src/db');
 const { validateStandName } = require('./src/profanityFilter');
-const { validateScoreSubmission, validateSaveState, sanitizeText } = require('./src/validation');
+const { validateScoreSubmission, validateSaveState } = require('./src/validation');
+
+/**
+ * Resolve real client IP across Netlify/Vercel -> Fly.io / Cloudflare proxy chains.
+ */
+function resolveClientIp(req) {
+  const headers = req.headers || {};
+  // 1. Netlify / Vercel / Cloudflare dedicated client IP headers
+  const edgeClientIp =
+    headers['x-nf-client-connection-ip'] ||
+    headers['x-vercel-forwarded-for'] ||
+    headers['cf-connecting-ip'];
+
+  if (typeof edgeClientIp === 'string' && edgeClientIp.trim()) {
+    return edgeClientIp.split(',')[0].trim();
+  }
+
+  // 2. Leftmost (original client) IP in X-Forwarded-For chain (e.g. client, netlify-edge, fly-proxy)
+  const xff = headers['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.trim()) {
+    return xff.split(',')[0].trim();
+  }
+
+  // 3. Fly.io direct client IP or Express req.ip
+  if (typeof headers['fly-client-ip'] === 'string' && headers['fly-client-ip'].trim()) {
+    return headers['fly-client-ip'].trim();
+  }
+
+  return req.ip || (req.socket && req.socket.remoteAddress) || '127.0.0.1';
+}
 
 function createApp(customDbPath) {
   const app = express();
   const db = getDb(customDbPath);
 
-  // Trust proxy for accurate rate-limiting behind Fly.io / Render / Cloudflare
-  app.set('trust proxy', 1);
+  // Adjust trust proxy for multi-hop Netlify/Vercel -> Fly.io proxy topology (2 hops by default)
+  const trustProxyHops =
+    process.env.TRUST_PROXY !== undefined ? Number(process.env.TRUST_PROXY) || 2 : 2;
+  app.set('trust proxy', trustProxyHops);
 
-  // Security headers (configured to allow Tailwind CDN & Google Fonts in frontend)
+  // Scheduled background leaderboard pruning (hourly, unref'd so it never blocks process exit)
+  const pruneIntervalMs = Number(process.env.PRUNE_INTERVAL_MS || 60 * 60 * 1000);
+  const pruneTimer = setInterval(() => {
+    try {
+      pruneLeaderboards(db);
+    } catch (err) {
+      console.error('[PRUNE_ERROR] Failed scheduled leaderboard pruning:', err.message);
+    }
+  }, pruneIntervalMs);
+  if (typeof pruneTimer.unref === 'function') {
+    pruneTimer.unref();
+  }
+
+  // Security headers
   app.use(
     helmet({
       contentSecurityPolicy: {
@@ -40,51 +94,62 @@ function createApp(customDbPath) {
     })
   );
 
-  // CORS configuration for lemonadestand.stabthefinger.com and local dev
-  const allowedOrigins = process.env.ALLOWED_ORIGINS
-    ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
-    : [
-        'https://lemonadestand.stabthefinger.com',
-        'http://lemonadestand.stabthefinger.com',
-        'http://localhost:3000',
-        'http://localhost:5173',
-        'http://127.0.0.1:3000'
-      ];
-
-  app.use(
-    cors({
-      origin(origin, callback) {
-        if (!origin || allowedOrigins.includes(origin) || process.env.NODE_ENV !== 'production') {
-          return callback(null, true);
+  // Public API CORS configuration (explicitly allows all origins unless strict ALLOWED_ORIGINS list is configured)
+  const rawAllowedOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.trim() : '*';
+  const corsOptions =
+    rawAllowedOrigins === '*' || !rawAllowedOrigins
+      ? {
+          origin: '*',
+          methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+          allowedHeaders: ['Content-Type', 'Accept']
         }
-        return callback(null, true); // Allow public read/submit with rate-limiting & integrity checks
-      },
-      methods: ['GET', 'POST', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Accept']
-    })
-  );
+      : {
+          origin(origin, callback) {
+            const allowlist = rawAllowedOrigins.split(',').map((o) => o.trim()).filter(Boolean);
+            if (!origin || allowlist.includes(origin)) {
+              return callback(null, true);
+            }
+            return callback(null, false);
+          },
+          methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+          allowedHeaders: ['Content-Type', 'Accept']
+        };
+
+  app.use(cors(corsOptions));
 
   // Strict JSON body limit to prevent payload abuse
-  app.use(express.json({ limit: '16kb' }));
+  app.use(express.json({ limit: '32kb' }));
 
-  // General API rate limiter
+  // Log req.ip and resolved client IP in production to confirm proxy accuracy
+  app.use('/api', (req, res, next) => {
+    req.clientIp = resolveClientIp(req);
+    if (process.env.NODE_ENV === 'production') {
+      console.log(`[API] ${req.method} ${req.path} - req.ip=${req.ip} clientIp=${req.clientIp}`);
+    }
+    return next();
+  });
+
+  // General API rate limiter (keyed per real client IP)
   const apiLimiter = rateLimit({
-    windowMs: 60 * 1000, // 1 minute
+    windowMs: 60 * 1000,
     max: Number(process.env.RATE_LIMIT_MAX_READ || 120),
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: (req) => resolveClientIp(req),
     message: {
       ok: false,
+      code: 'RATE_LIMITED',
       error: 'Too many requests from this IP, please try again in a minute.'
     }
   });
 
-  // Strict score submission rate limiter
+  // Strict score submission rate limiter (keyed per real client IP)
   const submitScoreLimiter = rateLimit({
-    windowMs: Number(process.env.SUBMIT_RATE_WINDOW_MS || 60 * 1000), // 1 minute window
-    max: Number(process.env.SUBMIT_RATE_LIMIT_MAX || 10), // Max 10 score submissions per minute per IP
+    windowMs: Number(process.env.SUBMIT_RATE_WINDOW_MS || 60 * 1000),
+    max: Number(process.env.SUBMIT_RATE_LIMIT_MAX || 10),
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: (req) => resolveClientIp(req),
     message: {
       ok: false,
       code: 'RATE_LIMITED',
@@ -93,27 +158,6 @@ function createApp(customDbPath) {
   });
 
   app.use('/api', apiLimiter);
-
-  // Middleware: sanitize query parameters and reject any profanity in query strings
-  app.use('/api', (req, res, next) => {
-    for (const [key, val] of Object.entries(req.query || {})) {
-      if (typeof val === 'string') {
-        const cleaned = sanitizeText(val, 32);
-        req.query[key] = cleaned;
-        if (key === 'stand_name' || key === 'search') {
-          const check = validateStandName(cleaned);
-          if (!check.valid) {
-            return res.status(400).json({
-              ok: false,
-              code: check.code,
-              error: check.reason
-            });
-          }
-        }
-      }
-    }
-    return next();
-  });
 
   // Healthcheck endpoint
   app.get('/api/health', (req, res) => {
@@ -128,9 +172,12 @@ function createApp(customDbPath) {
 
   // Validate Stand Name endpoint
   app.post('/api/validate-nickname', (req, res) => {
-    const raw = req.body && typeof req.body.stand_name === 'string'
-      ? req.body.stand_name
-      : (req.body && typeof req.body.nickname === 'string' ? req.body.nickname : '');
+    const raw =
+      req.body && typeof req.body.stand_name === 'string'
+        ? req.body.stand_name
+        : req.body && typeof req.body.nickname === 'string'
+          ? req.body.nickname
+          : '';
 
     const result = validateStandName(raw);
     if (!result.valid) {
@@ -151,10 +198,63 @@ function createApp(customDbPath) {
     });
   });
 
+  // Start New Stand Run & Issue Server Seed endpoint
+  app.post('/api/run/start', (req, res) => {
+    const rawName = req.body && typeof req.body.stand_name === 'string' ? req.body.stand_name : '';
+    const nameCheck = validateStandName(rawName);
+    if (!nameCheck.valid) {
+      return res.status(400).json({
+        ok: false,
+        code: nameCheck.code,
+        error: nameCheck.reason
+      });
+    }
+
+    const gameMode = req.body && req.body.game_mode === 'endless' ? 'endless' : 'standard';
+    const standToken = req.body && typeof req.body.stand_token === 'string' ? req.body.stand_token.trim() : '';
+
+    if (standToken && !isValidRawStandToken(standToken)) {
+      return res.status(400).json({
+        ok: false,
+        code: 'INVALID_STAND_TOKEN',
+        error: 'Stand token must be 16–24 alphanumeric characters.'
+      });
+    }
+
+    try {
+      const session = createRunSession(db, {
+        standName: nameCheck.sanitized,
+        gameMode,
+        standToken
+      });
+      return res.status(201).json({
+        ok: true,
+        run_id: session.run_id,
+        run_seed: session.run_seed,
+        run_token: session.run_token,
+        stand_name: session.stand_name,
+        game_mode: session.game_mode
+      });
+    } catch (err) {
+      return res.status(500).json({
+        ok: false,
+        code: 'SEED_CREATION_ERROR',
+        error: 'Failed to initialize run seed on server.'
+      });
+    }
+  });
+
   // Submit Score handler
   function handleScoreSubmission(req, res) {
-    const validation = validateScoreSubmission(req.body);
+    const validation = validateScoreSubmission(req.body, db);
     if (!validation.valid) {
+      console.warn('[ANTI-CHEAT] Suspicious score submission rejected:', {
+        ip: resolveClientIp(req),
+        stand_name: req.body && req.body.stand_name,
+        score: req.body && req.body.score,
+        code: validation.code,
+        error: validation.error
+      });
       return res.status(validation.status || 400).json({
         ok: false,
         code: validation.code || 'VALIDATION_ERROR',
@@ -164,10 +264,9 @@ function createApp(customDbPath) {
 
     try {
       const record = insertScoreRecord(db, validation.data);
-      // Clean up active save state upon run completion
-      if (validation.data.stand_token) {
+      if (validation.rawStandToken) {
         try {
-          deleteGameState(db, validation.data.stand_token);
+          deleteGameState(db, validation.rawStandToken);
         } catch (_) {}
       }
 
@@ -193,42 +292,70 @@ function createApp(customDbPath) {
   app.post('/api/save', (req, res) => {
     const val = validateSaveState(req.body);
     if (!val.valid) {
-      return res.status(val.status).json({ ok: false, error: val.error, code: val.code });
+      return res.status(val.status).json({
+        ok: false,
+        code: val.code || 'INVALID_SAVE_STATE',
+        error: val.error
+      });
     }
     try {
       const result = saveGameState(db, val.standToken, val.state);
       return res.json({ ok: true, updated_at: result.updated_at });
     } catch (err) {
-      return res.status(500).json({ ok: false, error: 'Failed to save game state to database.' });
+      return res.status(500).json({
+        ok: false,
+        code: 'DB_SAVE_ERROR',
+        error: 'Failed to save game state to database.'
+      });
     }
   });
 
   app.get('/api/save/:standToken', (req, res) => {
     const standToken = req.params.standToken;
-    if (!standToken) {
-      return res.status(400).json({ ok: false, error: 'Stand token is required.' });
+    if (!isValidRawStandToken(standToken)) {
+      return res.status(400).json({
+        ok: false,
+        code: 'INVALID_STAND_TOKEN',
+        error: 'Valid 16–24 character stand token is required.'
+      });
     }
     try {
       const state = loadGameState(db, standToken);
       if (!state) {
-        return res.status(404).json({ ok: false, error: 'No saved game found for this token.' });
+        return res.status(404).json({
+          ok: false,
+          code: 'SAVE_NOT_FOUND',
+          error: 'No saved game found for this token.'
+        });
       }
       return res.json({ ok: true, state });
     } catch (err) {
-      return res.status(500).json({ ok: false, error: 'Failed to load game state.' });
+      return res.status(500).json({
+        ok: false,
+        code: 'DB_LOAD_ERROR',
+        error: 'Failed to load game state.'
+      });
     }
   });
 
   app.delete('/api/save/:standToken', (req, res) => {
     const standToken = req.params.standToken;
-    if (!standToken) {
-      return res.status(400).json({ ok: false, error: 'Stand token is required.' });
+    if (!isValidRawStandToken(standToken)) {
+      return res.status(400).json({
+        ok: false,
+        code: 'INVALID_STAND_TOKEN',
+        error: 'Valid 16–24 character stand token is required.'
+      });
     }
     try {
       deleteGameState(db, standToken);
       return res.json({ ok: true });
     } catch (err) {
-      return res.status(500).json({ ok: false, error: 'Failed to delete saved game.' });
+      return res.status(500).json({
+        ok: false,
+        code: 'DB_DELETE_ERROR',
+        error: 'Failed to delete saved game.'
+      });
     }
   });
 
@@ -236,7 +363,7 @@ function createApp(customDbPath) {
   function makeLeaderboardHandler(category, title, unit) {
     return (req, res) => {
       try {
-        const modeRaw = req.query.mode ? String(req.query.mode).toLowerCase() : null;
+        const modeRaw = req.query.mode ? String(req.query.mode).toLowerCase().trim() : null;
         const mode = modeRaw === '8bit' ? '8-bit' : modeRaw;
         if (mode && !['retro', '8-bit', 'modern'].includes(mode)) {
           return res.status(400).json({
@@ -308,10 +435,15 @@ function createApp(customDbPath) {
     if (!validCategories.includes(normalized)) {
       return res.status(400).json({
         ok: false,
+        code: 'INVALID_CATEGORY',
         error: `Invalid category. Valid categories: ${validCategories.join(', ')}`
       });
     }
-    return makeLeaderboardHandler(normalized, `Leaderboard (${normalized})`, normalized.startsWith('glasses') ? 'glasses' : 'cents')(req, res, next);
+    return makeLeaderboardHandler(
+      normalized,
+      `Leaderboard (${normalized})`,
+      normalized.startsWith('glasses') ? 'glasses' : 'cents'
+    )(req, res, next);
   });
 
   // Serve static frontend files
@@ -321,7 +453,11 @@ function createApp(customDbPath) {
   // Fallback for SPA navigation
   app.get('*', (req, res) => {
     if (req.path.startsWith('/api/')) {
-      return res.status(404).json({ ok: false, error: 'API endpoint not found.' });
+      return res.status(404).json({
+        ok: false,
+        code: 'NOT_FOUND',
+        error: 'API endpoint not found.'
+      });
     }
     return res.sendFile(path.join(frontendDir, 'index.html'));
   });
@@ -337,4 +473,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createApp };
+module.exports = { createApp, resolveClientIp };

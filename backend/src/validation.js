@@ -1,32 +1,21 @@
 /**
- * Score Integrity & Input Sanitization Module
+ * Score Integrity, Server-Side Replay Verification & Input Sanitization Module
  */
 'use strict';
 
 const { validateStandName } = require('./profanityFilter');
+const { replayRun, STAND_TOKEN_REGEX } = require('../../frontend/js/game');
+const { hashStandToken, isValidRawStandToken, verifyAndConsumeRunSession } = require('./db');
 
 const VALID_MODES = new Set(['retro', '8-bit', 'modern']);
 const VALID_GAME_MODES = new Set(['standard', 'endless']);
 
-// Realistic upper bounds for anti-cheat validation
-const MAX_SINGLE_DAY_GLASSES = 2000;
-const MAX_SINGLE_DAY_PROFIT_CENTS = 250000; // $2,500.00 in a single day
-const MAX_STANDARD_RUN_PROFIT_CENTS = 2000000; // $20,000.00 in 12 days
+// Tightened upper bounds calibrated from simulated perfect-play runs
+const MAX_SINGLE_DAY_GLASSES = 600;
+const MAX_SINGLE_DAY_PROFIT_CENTS = 25000; // $250.00 max single-day profit
+const MAX_STANDARD_RUN_PROFIT_CENTS = 100000; // $1,000.00 max 12-day profit
 const MAX_ENDLESS_DAYS = 365;
-const MAX_TOTAL_SCORE_CENTS = 50000000;
-
-/**
- * Deterministic checksum shared with frontend game engine to verify untampered run logs.
- */
-function computeRunChecksum(standName, score, totalGlasses, bestDayProfit, bestDayGlasses, daysPlayed) {
-  const payload = `${String(standName).toLowerCase()}|${score}|${totalGlasses}|${bestDayProfit}|${bestDayGlasses}|${daysPlayed}|LEMSTAND_V1_SALT`;
-  let hash = 2166136261;
-  for (let i = 0; i < payload.length; i++) {
-    hash ^= payload.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
-}
+const MAX_TOTAL_SCORE_CENTS = 2500000; // $25,000.00 max 365-day endless profit
 
 /**
  * Strip any HTML/control characters from strings.
@@ -40,11 +29,12 @@ function sanitizeText(value, maxLen = 32) {
 }
 
 /**
- * Validate and sanitize a score submission payload.
+ * Validate, replay, and sanitize a score submission payload.
+ * Requires a valid day_log and a server-issued per-run seed.
  */
-function validateScoreSubmission(body) {
+function validateScoreSubmission(body, db = null) {
   if (!body || typeof body !== 'object') {
-    return { valid: false, status: 400, error: 'Invalid request payload.' };
+    return { valid: false, status: 400, code: 'INVALID_PAYLOAD', error: 'Invalid request payload.' };
   }
 
   // 1. Validate & filter stand_name
@@ -91,7 +81,7 @@ function validateScoreSubmission(body) {
     };
   }
 
-  // 4. Validate primary score (in cents)
+  // 4. Validate primary score against tightened perfect-play caps
   const score = Number(body.score);
   if (!Number.isInteger(score) || score < -50000 || score > MAX_TOTAL_SCORE_CENTS) {
     return {
@@ -107,153 +97,138 @@ function validateScoreSubmission(body) {
       valid: false,
       status: 400,
       code: 'SCORE_IMPOSSIBLE_STANDARD',
-      error: 'Submitted 12-day score exceeds maximum mathematically possible profit.'
+      error: 'Submitted 12-day score exceeds maximum possible perfect-play profit.'
     };
   }
 
-  // 5. Validate optional/companion metrics (best_day_profit, total_glasses_sold, best_day_glasses)
-  const bestDayProfit = body.best_day_profit !== undefined ? Number(body.best_day_profit) : Math.max(0, Math.round(score / Math.max(1, daysPlayed)));
-  const totalGlassesSold = body.total_glasses_sold !== undefined ? Number(body.total_glasses_sold) : 0;
-  const bestDayGlasses = body.best_day_glasses !== undefined ? Number(body.best_day_glasses) : 0;
+  // 5. Require day_log for all score submissions
+  if (!Array.isArray(body.day_log) || body.day_log.length === 0) {
+    return {
+      valid: false,
+      status: 400,
+      code: 'MISSING_DAY_LOG',
+      error: 'Score submissions require a complete daily decision log (day_log).'
+    };
+  }
+
+  if (body.day_log.length !== daysPlayed) {
+    return {
+      valid: false,
+      status: 400,
+      code: 'DAY_LOG_LENGTH_MISMATCH',
+      error: 'Day log length must match days_played.'
+    };
+  }
+
+  // 6. Verify server-issued per-run seed & session token
+  const runSeed = Number(body.run_seed);
+  const runId = typeof body.run_id === 'string' ? body.run_id.trim() : '';
+  const runToken = typeof body.run_token === 'string' ? body.run_token.trim() : '';
+
+  if (!Number.isInteger(runSeed) || runSeed <= 0 || !runId || !runToken) {
+    return {
+      valid: false,
+      status: 400,
+      code: 'MISSING_RUN_SEED',
+      error: 'Score submission requires a valid server-issued run_id, run_seed, and run_token.'
+    };
+  }
+
+  // 7. Replay the player's decisions server-side using the shared simulation engine
+  const replay = replayRun(runSeed, body.day_log, gameMode);
+  if (!replay.valid) {
+    return {
+      valid: false,
+      status: 400,
+      code: replay.code || 'REPLAY_VERIFICATION_FAILED',
+      error: replay.error || 'Server-side replay verification failed.'
+    };
+  }
+
+  // 8. Verify submitted summary metrics match the replayed run
+  if (replay.score !== score) {
+    return {
+      valid: false,
+      status: 400,
+      code: 'SCORE_REPLAY_MISMATCH',
+      error: 'Submitted score does not match server-replayed run total.'
+    };
+  }
+
+  const submittedTotalGlasses = body.total_glasses_sold !== undefined ? Number(body.total_glasses_sold) : replay.totalGlassesSold;
+  const submittedBestDayProfit = body.best_day_profit !== undefined ? Number(body.best_day_profit) : replay.bestDayProfit;
+  const submittedBestDayGlasses = body.best_day_glasses !== undefined ? Number(body.best_day_glasses) : replay.bestDayGlasses;
 
   if (
-    !Number.isInteger(bestDayProfit) ||
-    !Number.isInteger(totalGlassesSold) ||
-    !Number.isInteger(bestDayGlasses)
+    !Number.isInteger(submittedTotalGlasses) ||
+    !Number.isInteger(submittedBestDayProfit) ||
+    !Number.isInteger(submittedBestDayGlasses) ||
+    submittedTotalGlasses !== replay.totalGlassesSold ||
+    submittedBestDayProfit !== replay.bestDayProfit ||
+    submittedBestDayGlasses !== replay.bestDayGlasses ||
+    submittedBestDayGlasses > MAX_SINGLE_DAY_GLASSES ||
+    submittedBestDayProfit > MAX_SINGLE_DAY_PROFIT_CENTS
   ) {
     return {
       valid: false,
       status: 400,
-      code: 'INVALID_METRICS',
-      error: 'Run metrics must be integer values.'
+      code: 'METRICS_REPLAY_MISMATCH',
+      error: 'Run metrics failed server-side replay consistency checks.'
     };
   }
 
-  if (
-    totalGlassesSold < 0 ||
-    bestDayGlasses < 0 ||
-    bestDayGlasses > MAX_SINGLE_DAY_GLASSES ||
-    bestDayGlasses > totalGlassesSold ||
-    bestDayProfit > MAX_SINGLE_DAY_PROFIT_CENTS ||
-    totalGlassesSold > daysPlayed * MAX_SINGLE_DAY_GLASSES
-  ) {
+  // 9. Verify and consume the run session so the same run cannot be re-submitted
+  const sessionCheck = verifyAndConsumeRunSession(db, {
+    runId,
+    runSeed,
+    standName: nameCheck.sanitized,
+    gameMode,
+    runToken
+  });
+  if (!sessionCheck.valid) {
     return {
       valid: false,
       status: 400,
-      code: 'METRICS_INTEGRITY_FAILED',
-      error: 'Run metrics failed anti-cheat consistency checks.'
+      code: sessionCheck.code,
+      error: sessionCheck.error
     };
   }
 
-  // 6. If day_log array is provided, verify each day's math and sum
-  if (Array.isArray(body.day_log) && body.day_log.length > 0) {
-    if (body.day_log.length > MAX_ENDLESS_DAYS) {
-      return { valid: false, status: 400, code: 'LOG_TOO_LONG', error: 'Day log exceeds maximum allowed length.' };
-    }
+  // 10. Validate and hash stand_token (never return or store raw stand_token)
+  const rawTokenCandidate = typeof body.stand_token === 'string'
+    ? body.stand_token.trim()
+    : (typeof body.standToken === 'string' ? body.standToken.trim() : '');
 
-    let computedProfitSum = 0;
-    let computedGlassesSum = 0;
-    let computedMaxDayProfit = 0;
-    let computedMaxDayGlasses = 0;
-
-    for (const entry of body.day_log) {
-      if (!entry || typeof entry !== 'object') {
-        return { valid: false, status: 400, code: 'INVALID_LOG_ENTRY', error: 'Malformed day log entry.' };
-      }
-      const glassesMade = Number(entry.glassesMade);
-      const glassesSold = Number(entry.glassesSold);
-      const pricePerGlass = Number(entry.pricePerGlass);
-      const signsMade = Number(entry.signsMade);
-      const profitCents = Number(entry.profitCents);
-
-      if (
-        !Number.isInteger(glassesMade) || glassesMade < 0 || glassesMade > MAX_SINGLE_DAY_GLASSES ||
-        !Number.isInteger(glassesSold) || glassesSold < 0 || glassesSold > glassesMade ||
-        !Number.isInteger(pricePerGlass) || pricePerGlass < 1 || pricePerGlass > 500 ||
-        !Number.isInteger(signsMade) || signsMade < 0 || signsMade > 500 ||
-        !Number.isInteger(profitCents)
-      ) {
-        return {
-          valid: false,
-          status: 400,
-          code: 'DAY_LOG_TAMPERED',
-          error: 'Daily transaction log contains impossible values.'
-        };
-      }
-
-      const revenue = glassesSold * pricePerGlass;
-      if (profitCents > revenue) {
-        return {
-          valid: false,
-          status: 400,
-          code: 'PROFIT_EXCEEDS_REVENUE',
-          error: 'Daily profit cannot exceed gross daily revenue.'
-        };
-      }
-
-      computedProfitSum += profitCents;
-      computedGlassesSum += glassesSold;
-      if (profitCents > computedMaxDayProfit) computedMaxDayProfit = profitCents;
-      if (glassesSold > computedMaxDayGlasses) computedMaxDayGlasses = glassesSold;
-    }
-
-    if (
-      computedProfitSum !== score ||
-      computedGlassesSum !== totalGlassesSold ||
-      computedMaxDayProfit !== bestDayProfit ||
-      computedMaxDayGlasses !== bestDayGlasses
-    ) {
-      return {
-        valid: false,
-        status: 400,
-        code: 'LOG_SUM_MISMATCH',
-        error: 'Run summary does not match daily transaction log.'
-      };
-    }
+  if (rawTokenCandidate && !isValidRawStandToken(rawTokenCandidate)) {
+    return {
+      valid: false,
+      status: 400,
+      code: 'INVALID_STAND_TOKEN',
+      error: 'Stand token must be 16–24 alphanumeric characters.'
+    };
   }
 
-  // 7. Verify integrity_hash if supplied by client
-  if (typeof body.integrity_hash === 'string' && body.integrity_hash.length > 0) {
-    const expectedHash = computeRunChecksum(
-      nameCheck.sanitized,
-      score,
-      totalGlassesSold,
-      bestDayProfit,
-      bestDayGlasses,
-      daysPlayed
-    );
-    if (body.integrity_hash !== expectedHash) {
-      return {
-        valid: false,
-        status: 400,
-        code: 'INVALID_INTEGRITY_HASH',
-        error: 'Score integrity signature mismatch.'
-      };
-    }
-  }
-
+  const standTokenHash = rawTokenCandidate ? hashStandToken(rawTokenCandidate) : '';
   const version = sanitizeText(body.version || '1.0.0', 16) || '1.0.0';
-  const standToken = typeof body.stand_token === 'string'
-    ? sanitizeText(body.stand_token, 16)
-    : (typeof body.standToken === 'string' ? sanitizeText(body.standToken, 16) : '');
 
   return {
     valid: true,
+    rawStandToken: rawTokenCandidate,
     data: {
       stand_name: nameCheck.sanitized,
-      stand_token: standToken,
-      score,
-      best_day_profit: bestDayProfit,
-      best_day_number: Number.isInteger(Number(body.best_day_number)) ? Number(body.best_day_number) : 1,
-      best_day_weather: sanitizeText(body.best_day_weather || 'sunny', 24) || 'sunny',
-      total_glasses_sold: totalGlassesSold,
-      best_day_glasses: bestDayGlasses,
-      best_glasses_day_number: Number.isInteger(Number(body.best_glasses_day_number)) ? Number(body.best_glasses_day_number) : 1,
-      best_glasses_weather: sanitizeText(body.best_glasses_weather || 'sunny', 24) || 'sunny',
-      final_assets: Number.isInteger(Number(body.final_assets)) ? Number(body.final_assets) : 200 + score,
+      stand_token_hash: standTokenHash,
+      score: replay.score,
+      best_day_profit: replay.bestDayProfit,
+      best_day_number: replay.bestDayNumber,
+      best_day_weather: replay.bestDayWeather,
+      total_glasses_sold: replay.totalGlassesSold,
+      best_day_glasses: replay.bestDayGlasses,
+      best_glasses_day_number: replay.bestGlassesDayNumber,
+      best_glasses_weather: replay.bestGlassesWeather,
+      final_assets: replay.finalAssets,
       mode: normalizedMode,
       game_mode: gameMode,
-      days_played: daysPlayed,
+      days_played: replay.daysPlayed,
       version
     }
   };
@@ -261,15 +236,25 @@ function validateScoreSubmission(body) {
 
 /**
  * Validate active game save payload (including carry-forward daily settings).
+ * Enforces 16-24 character raw stand_token so leaderboard hashes cannot overwrite saves.
  */
 function validateSaveState(body) {
   if (!body || typeof body !== 'object') {
     return { valid: false, status: 400, code: 'INVALID_PAYLOAD', error: 'Missing or malformed request body.' };
   }
-  const standToken = typeof body.stand_token === 'string' ? body.stand_token.trim() : '';
-  if (!standToken || standToken.length < 6 || standToken.length > 20) {
-    return { valid: false, status: 400, code: 'INVALID_STAND_TOKEN', error: 'Invalid stand token.' };
+  const standToken = typeof body.stand_token === 'string'
+    ? body.stand_token.trim()
+    : (typeof body.standToken === 'string' ? body.standToken.trim() : '');
+
+  if (!STAND_TOKEN_REGEX.test(standToken)) {
+    return {
+      valid: false,
+      status: 400,
+      code: 'INVALID_STAND_TOKEN',
+      error: 'Stand token must be 16–24 alphanumeric characters.'
+    };
   }
+
   const state = body.state;
   if (!state || typeof state !== 'object') {
     return { valid: false, status: 400, code: 'INVALID_STATE', error: 'Missing game state object.' };
@@ -288,7 +273,6 @@ function validateSaveState(body) {
     return { valid: false, status: 400, code: 'INVALID_ASSETS', error: 'Assets must be an integer.' };
   }
 
-  // Validate lastSettings (carry-forward daily settings) if present
   if (state.lastSettings && typeof state.lastSettings === 'object') {
     const { glasses, signs, price } = state.lastSettings;
     if (
@@ -305,7 +289,11 @@ function validateSaveState(body) {
 
 module.exports = {
   VALID_MODES,
-  computeRunChecksum,
+  MAX_SINGLE_DAY_GLASSES,
+  MAX_SINGLE_DAY_PROFIT_CENTS,
+  MAX_STANDARD_RUN_PROFIT_CENTS,
+  MAX_ENDLESS_DAYS,
+  MAX_TOTAL_SCORE_CENTS,
   sanitizeText,
   validateScoreSubmission,
   validateSaveState
