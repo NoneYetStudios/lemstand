@@ -1628,9 +1628,6 @@
           const youIndicator = isCurrentUser
             ? ' <span class="you-indicator">🍋 &lt;=== You</span>'
             : '';
-          const lastRunBadge = isLastRun
-            ? ' <span class="last-run-badge" title="Your most recent completed run">⭕ LAST RUN</span>'
-            : '';
           const rowHighlightClass = isLastRun
             ? 'leaderboard-row-last-run'
             : 'hover:bg-amber-500/5';
@@ -1638,7 +1635,7 @@
           return `
             <tr class="border-b border-slate-200/25 ${rowHighlightClass}">
               <td class="py-2.5 px-3 font-bold">#${rank}</td>
-              <td class="py-2.5 px-3 font-bold">${escapeHtml(entry.stand_name)}${youIndicator}${lastRunBadge}</td>
+              <td class="py-2.5 px-3 font-bold">${escapeHtml(entry.stand_name)}${youIndicator}</td>
               <td class="py-2.5 px-3 font-extrabold">${formattedScore}</td>
               <td class="py-2.5 px-3"><span class="ls-badge px-2 py-0.5 text-xs uppercase">${modeLabel}</span></td>
               <td class="py-2.5 px-3 text-xs opacity-80">${dateShort}</td>
