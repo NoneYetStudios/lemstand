@@ -1,0 +1,28 @@
+# Lemonade Stand - Apache Configuration for JetHost / cPanel
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+
+    # 1. Block access to hidden files and SQLite database files
+    RewriteRule (^|/)\.(?!well-known) - [F]
+    RewriteRule \.(db|sql|sqlite|sqlite3)$ - [F]
+
+    # 2. Route all API requests to the PHP backend
+    RewriteCond %{REQUEST_URI} ^/api/ [NC]
+    RewriteRule ^api/(.*)$ api/index.php [QSA,L]
+
+    # 3. Allow real static files and folders to serve directly
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    # 4. Fallback to index.html for Single Page App navigation
+    RewriteRule ^ index.html [L]
+</IfModule>
+
+# MIME Types for modern web formats
+<IfModule mod_mime.c>
+    AddType image/svg+xml .svg
+    AddType audio/wav .wav
+    AddType application/json .json
+</IfModule>

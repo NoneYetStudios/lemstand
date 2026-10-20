@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lemonade Stand — Classic Apple ][e Remake (Retro • 8-Bit • Modern)</title>
+  <meta name="description" content="Play the modern recreation of the classic Apple ][e Lemonade Stand business simulation game. Switch between Retro CRT, 8-Bit Arcade, and Modern modes and compete on leaderboards." />
+  <link rel="icon" type="image/svg+xml" href="/assets/icons/svg/stand.svg" />
+  <link rel="stylesheet" href="/css/tailwind.min.css" />
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body class="theme-modern min-h-screen flex flex-col justify-between antialiased selection:bg-amber-300 selection:text-slate-900">
+
+  <!-- Retro Apple ][e CRT Scanline & Vignette Overlay -->
+  <div class="crt-overlay" aria-hidden="true"></div>
+
+  <!-- Top Navigation & Persistent Three-Way Theme Toggle Bar -->
+  <header class="w-full border-b border-slate-300/40 backdrop-blur-md sticky top-0 z-40">
+    <div class="max-w-5xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+      <!-- Brand / Title Link -->
+      <button id="btn-nav-home" type="button" class="flex items-center gap-2.5 text-left focus:outline-none group">
+        <span class="text-2xl" aria-hidden="true">🍋</span>
+        <div>
+          <span class="font-extrabold tracking-tight text-lg sm:text-xl block leading-none">LEMONADE STAND</span>
+          <span class="text-[11px] opacity-75 block mt-0.5">APPLE ][e CLASSIC EDITION</span>
+        </div>
+      </button>
+
+      <!-- Three-Way Visual Mode Toggle + Quick Controls -->
+      <div class="flex flex-wrap items-center gap-2">
+        <div class="ls-panel-muted p-1 flex items-center gap-1" role="group" aria-label="Visual Mode Toggle">
+          <button type="button" data-theme-btn="retro" class="theme-toggle-btn px-2.5 py-1 text-xs rounded transition" title="Apple ][e Green Phosphor CRT">
+            ][e Retro
+          </button>
+          <button type="button" data-theme-btn="8-bit" class="theme-toggle-btn px-2.5 py-1 text-xs rounded transition" title="8-Bit Pixel Art & Chiptune">
+            8-Bit
+          </button>
+          <button type="button" data-theme-btn="modern" class="theme-toggle-btn px-2.5 py-1 text-xs rounded transition active" title="Clean Modern Gradients & SVG">
+            Modern
+          </button>
+        </div>
+
+        <button id="btn-nav-leaderboards" type="button" class="ls-btn-secondary px-3 py-1.5 text-xs">
+          🏆 Leaderboards
+        </button>
+
+        <button id="btn-nav-sound" type="button" data-sound-toggle class="ls-btn-secondary px-3 py-1.5 text-xs" aria-label="Toggle Sound">
+          🔊 Sound: ON
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content Container -->
+  <main class="flex-1 w-full max-w-4xl mx-auto px-4 py-6 sm:py-10">
+
+    <!-- ==================================================================
+         SCREEN 1: TITLE SCREEN
+         ================================================================== -->
+    <section id="screen-title" class="screen-view space-y-6">
+      <div class="ls-card p-6 sm:p-10 text-center space-y-6">
+        <div class="inline-block ls-badge px-3 py-1 text-xs font-bold uppercase tracking-wider">
+          Hi-Res Neighborhood Business Simulation • Est. 1979
+        </div>
+
+        <h1 class="text-3xl sm:text-5xl font-extrabold tracking-tight">
+          Welcome to Lemonadeville!
+        </h1>
+
+        <p class="max-w-2xl mx-auto text-sm sm:text-base opacity-85 leading-relaxed">
+          You are starting your own neighborhood lemonade stand with <strong>$2.00</strong> in starter cash.
+          Watch the daily weather forecast, decide how many glasses of lemonade to mix, put up advertising signs,
+          and set your price per glass!
+        </p>
+
+        <!-- Dynamic Mode-Specific Stand Artwork -->
+        <div id="title-stand-hero" class="max-w-lg mx-auto"></div>
+
+        <!-- Continue Saved Stand Card (Shown when localStorage save exists) -->
+        <div id="continue-stand-container" class="hidden max-w-md mx-auto p-4 ls-panel-muted space-y-3">
+          <div class="text-xs font-bold uppercase tracking-wider opacity-80">Saved Stand Found in Browser</div>
+          <div id="continue-stand-details" class="text-sm font-bold"></div>
+          <button id="btn-continue-stand" type="button" class="ls-btn-primary w-full py-3 px-5 text-sm font-bold">
+            ▶ Continue Your Stand
+          </button>
+        </div>
+
+        <!-- Primary Action Buttons -->
+        <div class="flex flex-col sm:flex-row items-center justify-center gap-4 pt-2">
+          <button id="btn-start-new-stand" type="button" class="ls-btn-primary w-full sm:w-auto px-8 py-3.5 text-base font-bold">
+            🍋 Start New Stand
+          </button>
+          <button id="btn-title-leaderboards" type="button" class="ls-btn-secondary w-full sm:w-auto px-6 py-3.5 text-base">
+            🏆 View Leaderboards
+          </button>
+        </div>
+
+        <!-- Quick Feature Highlights -->
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-4 text-left">
+          <div class="ls-panel-muted p-4">
+            <div class="font-bold text-sm mb-1">🌦️ Dynamic Weather</div>
+            <p class="text-xs opacity-80">Sunny skies, heatwaves, cold snaps, and sudden thunderstorms directly impact customer thirst.</p>
+          </div>
+          <div class="ls-panel-muted p-4">
+            <div class="font-bold text-sm mb-1">📰 Random Events</div>
+            <p class="text-xs opacity-80">Beware gusty winds blowing down signs, supply shortages, street closures, or thirsty road crews!</p>
+          </div>
+          <div class="ls-panel-muted p-4">
+            <div class="font-bold text-sm mb-1">🏆 7 Leaderboards</div>
+            <p class="text-xs opacity-80">Compete for Daily, Weekly, All-Time, Best Day, Best 12-Day Run, and Most Glasses Sold.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================================================================
+         SCREEN 2: "CHOOSE YOUR STAND NAME" & GAME MODE SETUP
+         ================================================================== -->
+    <section id="screen-setup" class="screen-view hidden space-y-6">
+      <div class="ls-card p-6 sm:p-8 max-w-xl mx-auto space-y-6">
+        <div class="flex items-center justify-between border-b border-slate-300/30 pb-4">
+          <h2 class="text-xl sm:text-2xl font-extrabold">Register Your Lemonade Stand</h2>
+          <button id="btn-setup-back" type="button" class="ls-btn-secondary px-3 py-1 text-xs">
+            ← Back
+          </button>
+        </div>
+
+        <form id="setup-stand-form" class="space-y-6" novalidate>
+          <!-- Stand Name Input -->
+          <div>
+            <label for="stand-name-input" class="block text-sm font-bold mb-2">
+              Choose your Stand Name
+            </label>
+            <input
+              id="stand-name-input"
+              name="stand_name"
+              type="text"
+              minlength="3"
+              maxlength="12"
+              pattern="^[A-Za-z0-9_]{3,12}$"
+              placeholder="e.g. Sunny_Cups"
+              autocomplete="off"
+              required
+              class="ls-input w-full px-4 py-3 text-base font-bold"
+            />
+            <p id="stand-name-feedback" class="text-xs mt-2 hidden text-red-500 font-semibold" role="status" aria-live="polite"></p>
+          </div>
+
+          <!-- Game Length Selector -->
+          <div class="space-y-2">
+            <span class="block text-sm font-bold">Select Game Length</span>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <label class="ls-panel-muted p-4 cursor-pointer flex items-start gap-3">
+                <input type="radio" name="game-length-mode" value="standard" checked class="mt-1" />
+                <div>
+                  <div class="font-bold text-sm">Standard 12-Day Run</div>
+                  <div class="text-xs opacity-80 mt-0.5">The classic 12-day summer season. Qualifies for all 7 leaderboards!</div>
+                </div>
+              </label>
+
+              <label class="ls-panel-muted p-4 cursor-pointer flex items-start gap-3">
+                <input type="radio" name="game-length-mode" value="endless" class="mt-1" />
+                <div>
+                  <div class="font-bold text-sm">Endless Summer Mode</div>
+                  <div class="text-xs opacity-80 mt-0.5">Play as many days as you want until you retire or go bankrupt.</div>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <div class="pt-2 flex flex-col sm:flex-row gap-3">
+            <button type="submit" class="ls-btn-primary flex-1 py-3.5 px-6 text-base font-bold">
+              Open Stand (Start Day 1) →
+            </button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- ==================================================================
+         SCREEN 3: DAILY DECISION SCREEN (Forecast, Glasses, Signs, Price)
+         ================================================================== -->
+    <section id="screen-decision" class="screen-view hidden space-y-6">
+      <!-- Top HUD Status Bar -->
+      <div class="ls-card p-4 sm:p-5 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <span id="hud-day-badge" class="ls-badge px-2.5 py-0.5 text-xs font-bold uppercase">DAY 1 OF 12</span>
+          <h2 id="hud-stand-name" class="text-xl sm:text-2xl font-extrabold mt-1">Sunny_Cups</h2>
+        </div>
+
+        <div class="flex items-center gap-6">
+          <div class="text-right">
+            <div class="text-xs uppercase opacity-75">Available Cash</div>
+            <div id="hud-assets" class="text-xl sm:text-2xl font-extrabold">$2.00</div>
+          </div>
+          <div class="text-right">
+            <div class="text-xs uppercase opacity-75">Net Profit</div>
+            <div id="hud-total-profit" class="text-lg sm:text-xl font-bold">$0.00</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <!-- Left Column: Weather Forecast & Stand Banner (5 cols) -->
+        <div class="lg:col-span-5 space-y-6">
+          <div class="ls-card p-5 space-y-4">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold uppercase tracking-wider opacity-75">Weather Report</span>
+              <span id="forecast-rain-risk" class="ls-badge px-2.5 py-0.5 text-xs font-bold">Rain Risk: 5%</span>
+            </div>
+
+            <div class="flex items-center gap-4 py-2">
+              <div id="forecast-weather-icon" class="shrink-0"></div>
+              <div>
+                <div id="forecast-weather-label" class="text-xl font-extrabold">Sunny & Clear</div>
+                <div id="forecast-temp" class="text-2xl font-black opacity-90">78°F</div>
+              </div>
+            </div>
+
+            <p id="forecast-description" class="text-xs sm:text-sm opacity-85 leading-relaxed">
+              Clear skies and pleasant sunshine across the neighborhood.
+            </p>
+          </div>
+
+          <div class="ls-card p-5 space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold uppercase tracking-wider opacity-75">Ingredient Cost Today</span>
+              <span id="cost-per-glass-display" class="text-lg font-extrabold">2¢</span>
+            </div>
+            <p id="cost-reason-banner" class="text-xs opacity-85 leading-relaxed">
+              Mom gave you free sugar! Cost is only $0.02/glass.
+            </p>
+            <div id="decision-stand-hero" class="pt-2"></div>
+          </div>
+        </div>
+
+        <!-- Right Column: Daily Decisions Form (7 cols) -->
+        <div class="lg:col-span-7">
+          <form id="decision-form" class="ls-card p-6 space-y-6" novalidate>
+            <h3 class="text-lg sm:text-xl font-extrabold border-b border-slate-300/30 pb-3">
+              Morning Stand Decisions
+            </h3>
+
+            <!-- 1. Glasses to Make -->
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <label for="input-glasses" class="font-bold text-sm">
+                  1. Glasses of Lemonade to Make
+                </label>
+                <span id="max-glasses-hint" class="text-xs opacity-75">Max affordable: 100 glasses</span>
+              </div>
+              <div class="flex items-center gap-4">
+                <input id="range-glasses" type="range" min="0" max="100" value="20" class="flex-1 cursor-pointer" />
+                <input id="input-glasses" type="number" min="0" max="1000" value="20" class="ls-input w-24 px-3 py-2 text-center font-bold" />
+              </div>
+              <p class="text-xs opacity-75">Unsold glasses at the end of the day cannot be saved for tomorrow.</p>
+            </div>
+
+            <!-- 2. Advertising Signs -->
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <label for="input-signs" class="font-bold text-sm">
+                  2. Advertising Signs (15¢ each)
+                </label>
+                <span id="max-signs-hint" class="text-xs opacity-75">Max with remaining cash: 10 signs</span>
+              </div>
+              <div class="flex items-center gap-4">
+                <input id="range-signs" type="range" min="0" max="20" value="1" class="flex-1 cursor-pointer" />
+                <input id="input-signs" type="number" min="0" max="100" value="1" class="ls-input w-24 px-3 py-2 text-center font-bold" />
+              </div>
+              <p class="text-xs opacity-75">Signs attract more neighbors to your stand (with diminishing returns).</p>
+            </div>
+
+            <!-- 3. Price per Glass (Cents) -->
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <label for="input-price" class="font-bold text-sm">
+                  3. Price per Glass (in Cents ¢)
+                </label>
+                <span id="price-recommend-hint" class="text-xs opacity-75">Recommended: 8¢ – 20¢</span>
+              </div>
+              <div class="flex items-center gap-4">
+                <input id="range-price" type="range" min="1" max="50" value="10" class="flex-1 cursor-pointer" />
+                <div class="flex items-center gap-1">
+                  <input id="input-price" type="number" min="1" max="100" value="10" class="ls-input w-24 px-3 py-2 text-center font-bold" />
+                  <span class="font-bold text-sm">¢</span>
+                </div>
+              </div>
+              <p class="text-xs opacity-75">Higher prices increase margin per cup, but reduce total customer demand.</p>
+            </div>
+
+            <!-- Live Expense & Cash Preview Box -->
+            <div class="ls-panel-muted p-4 space-y-2 text-xs sm:text-sm">
+              <div class="flex justify-between">
+                <span>Lemonade Production Cost:</span>
+                <span id="preview-glasses-cost" class="font-bold">$0.40</span>
+              </div>
+              <div class="flex justify-between">
+                <span>Advertising Signs Cost:</span>
+                <span id="preview-signs-cost" class="font-bold">$0.15</span>
+              </div>
+              <div class="flex justify-between border-t border-slate-300/30 pt-2 font-bold">
+                <span>Total Morning Expenses:</span>
+                <span id="preview-total-cost">$0.55</span>
+              </div>
+              <div class="flex justify-between">
+                <span>Cash Remaining in Register:</span>
+                <span id="preview-remaining-cash" class="font-bold">$1.45</span>
+              </div>
+              <div class="flex justify-between opacity-80">
+                <span>Max Revenue if Sold Out:</span>
+                <span id="preview-max-revenue" class="font-bold">$2.00</span>
+              </div>
+            </div>
+
+            <p id="decision-error-msg" class="hidden text-xs font-bold text-red-500"></p>
+
+            <!-- Action Buttons -->
+            <div class="flex flex-col sm:flex-row gap-3 pt-1">
+              <button type="submit" class="ls-btn-primary flex-1 py-3.5 px-6 text-base font-bold">
+                ☀️ Open Stand for the Day!
+              </button>
+              <button id="btn-retire-endless" type="button" class="hidden ls-btn-secondary py-3.5 px-4 text-xs font-bold">
+                🏁 Retire & Submit Score
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================================================================
+         SCREEN 4: DAILY RESULTS & RANDOM EVENT REPORT
+         ================================================================== -->
+    <section id="screen-results" class="screen-view hidden space-y-6">
+      <div class="ls-card p-6 sm:p-8 max-w-2xl mx-auto space-y-6">
+        <div class="flex items-center justify-between border-b border-slate-300/30 pb-4">
+          <div>
+            <h2 id="result-day-title" class="text-2xl font-extrabold">Day 1 Financial Report</h2>
+            <p id="result-stand-subtitle" class="text-xs sm:text-sm opacity-80 mt-0.5">Sunny_Cups • Sunny & Clear</p>
+          </div>
+          <div id="result-weather-icon"></div>
+        </div>
+
+        <!-- Random Event Banner -->
+        <div class="ls-panel-muted p-4 space-y-1.5">
+          <span id="result-event-badge" class="ls-badge px-2 py-0.5 text-[11px] font-bold uppercase">STEADY DAY</span>
+          <h3 id="result-event-title" class="font-extrabold text-base pt-1">Normal Neighborhood Day</h3>
+          <p id="result-event-desc" class="text-xs sm:text-sm opacity-85 leading-relaxed">
+            Traffic flowed steadily along the sidewalk with no unusual disruptions.
+          </p>
+        </div>
+
+        <!-- Financial Ledger Table -->
+        <div class="space-y-3 text-sm">
+          <div class="flex justify-between py-1.5 border-b border-slate-300/25">
+            <span>Glasses Sold / Glasses Made:</span>
+            <span id="res-glasses-sold" class="font-bold">20 / 20</span>
+          </div>
+          <div class="flex justify-between py-1.5 border-b border-slate-300/25">
+            <span>Price Charged per Glass:</span>
+            <span id="res-price-per-glass" class="font-bold">10¢</span>
+          </div>
+          <div class="flex justify-between py-1.5 border-b border-slate-300/25">
+            <span>Gross Sales Income:</span>
+            <span id="res-gross-income" class="font-bold">$2.00</span>
+          </div>
+          <div class="flex justify-between py-1.5 border-b border-slate-300/25">
+            <span>Lemonade Mix Expenses:</span>
+            <span id="res-lemonade-cost" class="font-bold">$0.40</span>
+          </div>
+          <div class="flex justify-between py-1.5 border-b border-slate-300/25">
+            <span>Advertising Sign Expenses:</span>
+            <span id="res-signs-cost" class="font-bold">$0.15</span>
+          </div>
+          <div class="flex justify-between py-1.5 border-b border-slate-300/25 font-bold">
+            <span>Total Daily Expenses:</span>
+            <span id="res-total-expenses">$0.55</span>
+          </div>
+
+          <div class="flex justify-between items-center pt-3">
+            <span class="text-base font-extrabold">Net Profit / Loss Today:</span>
+            <span id="res-net-profit" class="text-2xl font-extrabold text-emerald-500">+$1.45</span>
+          </div>
+
+          <div class="flex justify-between items-center ls-panel-muted p-3 mt-2">
+            <span class="font-bold">Updated Stand Cash Balance:</span>
+            <span id="res-ending-assets" class="text-xl font-extrabold">$3.45</span>
+          </div>
+        </div>
+
+        <button id="btn-next-day" type="button" class="ls-btn-primary w-full py-3.5 px-6 text-base font-bold">
+          Proceed to Day 2 →
+        </button>
+      </div>
+    </section>
+
+    <!-- ==================================================================
+         SCREEN 5: END-OF-RUN SUMMARY
+         ================================================================== -->
+    <section id="screen-summary" class="screen-view hidden space-y-6">
+      <div class="ls-card p-6 sm:p-8 space-y-6">
+        <div class="text-center space-y-2">
+          <span id="summary-status-badge" class="ls-badge px-3 py-1 text-xs font-bold uppercase">
+            12-DAY SUMMER SEASON COMPLETE!
+          </span>
+          <h2 id="summary-stand-name" class="text-3xl font-extrabold pt-1">Sunny_Cups</h2>
+          <p id="summary-submit-status" class="text-xs font-semibold opacity-85">
+            Submitting verified score to leaderboards...
+          </p>
+        </div>
+
+        <!-- Key Run Metrics Grid -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div class="ls-panel-muted p-4 text-center">
+            <div class="text-xs uppercase opacity-75">Final Assets</div>
+            <div id="summary-final-assets" class="text-xl sm:text-2xl font-extrabold mt-1">$12.50</div>
+          </div>
+          <div class="ls-panel-muted p-4 text-center">
+            <div class="text-xs uppercase opacity-75">Total Net Profit</div>
+            <div id="summary-net-profit" class="text-xl sm:text-2xl font-extrabold mt-1">+$10.50</div>
+          </div>
+          <div class="ls-panel-muted p-4 text-center">
+            <div class="text-xs uppercase opacity-75">Best Day Profit</div>
+            <div id="summary-best-day-profit" class="text-base sm:text-lg font-extrabold mt-1">$2.40</div>
+          </div>
+          <div class="ls-panel-muted p-4 text-center">
+            <div class="text-xs uppercase opacity-75">Total Glasses</div>
+            <div id="summary-total-glasses" class="text-base sm:text-lg font-extrabold mt-1">215 sold</div>
+          </div>
+        </div>
+
+        <div class="ls-panel-muted p-3 text-center text-xs">
+          Single-Day Glasses Record This Run: <strong id="summary-best-day-glasses">35 glasses</strong>
+        </div>
+
+        <!-- Full Day-by-Day Ledger -->
+        <div class="space-y-2">
+          <h3 class="text-sm font-bold uppercase tracking-wider opacity-80">Season Day-by-Day Ledger</h3>
+          <div class="overflow-x-auto ls-panel-muted">
+            <table class="w-full text-left text-xs sm:text-sm">
+              <thead>
+                <tr class="border-b border-slate-300/30 opacity-75">
+                  <th class="py-2 px-2">Day</th>
+                  <th class="py-2 px-2">Weather</th>
+                  <th class="py-2 px-2">Sold/Made</th>
+                  <th class="py-2 px-2">Price</th>
+                  <th class="py-2 px-2">Signs</th>
+                  <th class="py-2 px-2">Profit</th>
+                  <th class="py-2 px-2">Balance</th>
+                </tr>
+              </thead>
+              <tbody id="summary-log-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="flex flex-col sm:flex-row gap-4 pt-2">
+          <button id="btn-summary-play-again" type="button" class="ls-btn-primary flex-1 py-3.5 px-6 text-base font-bold">
+            🍋 Start Another Stand
+          </button>
+          <button id="btn-summary-leaderboards" type="button" class="ls-btn-secondary flex-1 py-3.5 px-6 text-base font-bold">
+            🏆 View Global Leaderboards
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================================================================
+         SCREEN 6: LEADERBOARDS (7 CATEGORIES)
+         ================================================================== -->
+    <section id="screen-leaderboards" class="screen-view hidden space-y-6">
+      <div class="ls-card p-6 sm:p-8 space-y-6">
+        <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-300/30 pb-4">
+          <div>
+            <h2 class="text-2xl font-extrabold">🏆 Official Lemonade Stand Leaderboards</h2>
+            <p class="text-xs opacity-80 mt-0.5">Backed by persistent storage & strict family-friendly stand filtering</p>
+          </div>
+          <button id="btn-leaderboard-back" type="button" class="ls-btn-secondary px-4 py-2 text-xs font-bold">
+            ← Back to Game
+          </button>
+        </div>
+
+        <!-- 7 Leaderboard Category Tabs -->
+        <div class="flex flex-wrap gap-2" role="tablist" aria-label="Leaderboard Categories">
+          <button type="button" data-lb-tab="all-time" class="ls-btn-primary px-3 py-1.5 text-xs">All-Time</button>
+          <button type="button" data-lb-tab="daily" class="ls-btn-secondary px-3 py-1.5 text-xs">Daily</button>
+          <button type="button" data-lb-tab="weekly" class="ls-btn-secondary px-3 py-1.5 text-xs">Weekly</button>
+          <button type="button" data-lb-tab="best-day" class="ls-btn-secondary px-3 py-1.5 text-xs">Best Single-Day Profit</button>
+          <button type="button" data-lb-tab="best-run" class="ls-btn-secondary px-3 py-1.5 text-xs">Best 12-Day Run</button>
+          <button type="button" data-lb-tab="glasses-day" class="ls-btn-secondary px-3 py-1.5 text-xs">Most Glasses (Day)</button>
+          <button type="button" data-lb-tab="glasses-run" class="ls-btn-secondary px-3 py-1.5 text-xs">Most Glasses (Run)</button>
+        </div>
+
+        <!-- Sub-header & Mode Filter -->
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <h3 id="leaderboard-category-title" class="text-base font-extrabold">All-Time Top Profits</h3>
+          <div class="flex items-center gap-2 text-xs">
+            <label for="leaderboard-mode-filter" class="font-bold">Visual Mode Filter:</label>
+            <select id="leaderboard-mode-filter" class="ls-input px-3 py-1.5 text-xs font-bold">
+              <option value="">All Modes</option>
+              <option value="retro">Retro (Apple ][e)</option>
+              <option value="8-bit">8-Bit Arcade</option>
+              <option value="modern">Modern</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Leaderboard Table -->
+        <div class="overflow-x-auto ls-panel-muted">
+          <table class="w-full text-left text-xs sm:text-sm">
+            <thead>
+              <tr class="border-b border-slate-300/30 opacity-75">
+                <th class="py-2.5 px-3">Rank</th>
+                <th class="py-2.5 px-3">Stand Name</th>
+                <th class="py-2.5 px-3">Score</th>
+                <th class="py-2.5 px-3">Mode</th>
+                <th class="py-2.5 px-3">Date</th>
+                <th class="py-2.5 px-3">Ver</th>
+              </tr>
+            </thead>
+            <tbody id="leaderboard-tbody">
+              <tr>
+                <td colspan="6" class="py-8 text-center opacity-75">Loading leaderboard...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+  </main>
+  <footer class="w-full border-t border-slate-300/30 py-4 text-center text-xs opacity-75">
+    <div class="max-w-5xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
+      <span>🍋 <strong>Lemonade Stand</strong> v1.0.0 — Inspired by the 1979 Apple ][e Classic</span>
+      <span>lemonadestand.stabthefinger.com</span>
+    </div>
+  </footer>
+
+  <!-- Scripts -->
+  <script src="/js/profanityFilter.js"></script>
+  <script src="/js/assets.js"></script>
+  <script src="/js/sound.js"></script>
+  <script src="/js/game.js"></script>
+</body>
+</html>

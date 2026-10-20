@@ -1,0 +1,21 @@
+# Render.com Blueprint for Lemonade Stand Backend + Persistent SQLite Disk
+services:
+  - type: web
+    name: lemonade-stand-api
+    runtime: docker
+    plan: starter
+    region: ohio
+    healthCheckPath: /api/health
+    disk:
+      name: lemonade-sqlite-disk
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 8080
+      - key: DB_PATH
+        value: /data/lemonadestand.db
+      - key: ALLOWED_ORIGINS
+        value: https://lemonadestand.stabthefinger.com

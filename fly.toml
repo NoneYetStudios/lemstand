@@ -1,0 +1,31 @@
+# Fly.io Deployment Configuration for Lemonade Stand Backend + SQLite
+app = "lemonade-stand-api"
+primary_region = "ord"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "8080"
+  DB_PATH = "/data/lemonadestand.db"
+  ALLOWED_ORIGINS = "https://lemonadestand.stabthefinger.com"
+
+[[mounts]]
+  source = "lemonade_sqlite_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/api/health"
