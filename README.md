@@ -105,6 +105,8 @@ npm start
 ```
 Open **`http://localhost:3000`** in your browser.
 
+---
+
 ## License
 
 MIT License © 2026 None Yet Studios
